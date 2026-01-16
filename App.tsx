@@ -79,10 +79,26 @@ const App: React.FC = () => {
       alert(
         `Sinkronisasi Selesai! Berhasil menambahkan ${totalAdded} soal baru.`
       );
-    } catch (err) {
-      alert(
-        "Terjadi kendala saat menghubungi AI. Periksa koneksi atau API Key Anda."
-      );
+    } catch (err: any) {
+      // ✅ PERBAIKAN: Cek pesan error untuk memberi Alert Spesifik
+      const errorMessage = err.message || String(err);
+
+      if (
+        errorMessage.includes("quota") ||
+        errorMessage.includes("429") ||
+        errorMessage.includes("Too Many Requests")
+      ) {
+        alert(
+          "⚠️ KUOTA HABIS!\n\n" +
+            "Anda telah mencapai batas permintaan AI hari ini.\n" +
+            "💡 Solusi:\n" +
+            "Tunggu hingga besok pagi (Reset jam 00:00 WIB)"
+        );
+      } else {
+        alert(
+          "Terjadi kendala saat menghubungi AI. Periksa koneksi internet Anda."
+        );
+      }
     } finally {
       setIsSyncing(false);
       setSyncProgress(0);

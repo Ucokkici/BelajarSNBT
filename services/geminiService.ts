@@ -24,7 +24,7 @@ PERATURAN UTAMA:
 `;
 
 // Menggunakan model yang terbukti berfungsi di akun Anda
-const DEFAULT_MODEL = "models/gemini-flash-latest";
+const DEFAULT_MODEL = "models/gemini-flash-lite-latest";
 console.log("🤖 Default Model Set to:", DEFAULT_MODEL);
 
 // Rate limiting
@@ -59,17 +59,24 @@ async function retryOnQuotaExceeded<T>(
         error.message?.includes("429") || error.message?.includes("quota");
       const isLastAttempt = attempt === maxRetries;
 
-      if (is429 && !isLastAttempt) {
-        const delay = baseDelay * Math.pow(2, attempt);
-        console.log(
-          `⚠️ Quota exceeded. Retrying in ${delay / 1000}s... (Attempt ${
-            attempt + 1
-          }/${maxRetries})`
-        );
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      } else {
+      // ✅ FIX 1: Jika errornya 429 (Quota Habis), LANGSUNG STOP. JANGAN RETRY.
+      if (is429) {
+        console.error("🚫 Quota Exceeded detected. Stopping retries.");
         throw error;
       }
+
+      // Hanya retry jika error selain 429 (misal: network error, 500, dll)
+      if (isLastAttempt) {
+        throw error;
+      }
+
+      const delay = baseDelay * Math.pow(2, attempt);
+      console.log(
+        `⚠️ Server error sementara. Retrying in ${delay / 1000}s... (Attempt ${
+          attempt + 1
+        }/${maxRetries})`
+      );
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
   throw new Error("Max retries exceeded");
