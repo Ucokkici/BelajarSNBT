@@ -1,55 +1,76 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { ChatMessage, SubtestType, Question, AIAnalysis } from "../types";
 
-const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+// --- LOGIKA BARU: Baca API Key dari LocalStorage User ---
+const getUserApiKey = (): string => {
+  const key = localStorage.getItem("user_gemini_api_key");
+  if (!key) return "";
+  return key;
+};
+
+const API_KEY = getUserApiKey();
 
 console.log("🔑 --- DEBUG: INIT SERVICE ---");
-console.log("🔑 API Key status:", API_KEY ? "✅ Loaded" : "❌ Not Found");
-if (API_KEY) {
-  console.log("🔑 API Key prefix:", API_KEY.substring(0, 12) + "...");
-}
+console.log(
+  "🔑 API Key status:",
+  API_KEY ? "✅ Loaded from User Storage" : "❌ Not Found",
+);
 
-const genAI = new GoogleGenerativeAI(API_KEY);
+// Inisialisasi Model
+let genAI: GoogleGenerativeAI | null = null;
+if (API_KEY) {
+  genAI = new GoogleGenerativeAI(API_KEY);
+}
 
 const analysisCache = new Map<string, AIAnalysis>();
 const topicCache = new Map<string, AIAnalysis>();
 
+// ✅ PERBAIKAN PROMPT: Di sini kita atur agar AI TIDAK BOLEH pakai simbol web/matetika coding
 const MASTER_PERSONA_INSTRUCTION = `
 Anda adalah AI Master Tutor SNBT Profesional.
-PERATURAN UTAMA:
-1. DILARANG KERAS MENGGUNAKAN SIMBOL DOLAR ($) ATAU BACKSLASH (\). 
-2. GUNAKAN HANYA SIMBOL UNICODE untuk rumus: →, ¬, ∧, ∨, ∴, ↔, ≡, √, π, ±, ≠, ≤, ≥, ², ³, ∩, ∪, ∑, ∫, ≈, ∈, ∉, ⊂
-3. Berikan penjelasan yang super cepat dan to-the-point.
-4. Format output dalam paragraf dengan line breaks (\n\n) untuk readability.
+PERATURAN PENULISAN MATEMATIKA (WAJIB DIPATUHI):
+1. DILARANG KERAS MENGGUNAKAN TANDA DOLAR ($) untuk rumus. CONTOH SALAH: $X^2 = 49$.
+2. DILARANG MENGGUNAKAN BACKSLASH (\) untuk perintah LaTeX.
+3. WAJIB MENGGUNAKAN SIMBOL UNICODE STANDAR (Simbol yang bisa diketik di HP/Laptop biasa).
+   - Pangkat: Gunakan tanda caret ^ atau superscript unicode (contoh: x^2 atau x²).
+   - Akar Kuadrat: Gunakan simbol √ (contoh: √49 = 7).
+   - Pi: Gunakan simbol π.
+   - Tidak Sama Dengan: Gunakan ≠.
+   - Lebih Dari Sama Dengan: Gunakan ≥.
+   - Kurang Dari Sama Dengan: Gunakan ≤.
+   - Derajat: Gunakan °.
+
+CONTOH PENULISAN YANG BENAR:
+- Jika X² = 49 dan Y = 7, maka hubungan antara |X| dan Y adalah ...
+- Rumus luas lingkaran adalah L = π × r².
+- Nilai dari √144 adalah 12.
+
+Jelaskan materi dengan bahasa Indonesia yang jelas, cepat, dan to-the-point.
 `;
 
-// Menggunakan model yang terbukti berfungsi di akun Anda
+// Gunakan model flash (lebih cepat & murah)
 const DEFAULT_MODEL = "models/gemini-flash-lite-latest";
-console.log("🤖 Default Model Set to:", DEFAULT_MODEL);
 
-// Rate limiting
+// Rate limiting helper
 let lastRequestTime = 0;
-const MIN_REQUEST_INTERVAL = 4000; // 4 seconds
+const MIN_REQUEST_INTERVAL = 1000;
 
 async function rateLimitedRequest<T>(requestFn: () => Promise<T>): Promise<T> {
   const now = Date.now();
   const timeSinceLastRequest = now - lastRequestTime;
-
   if (timeSinceLastRequest < MIN_REQUEST_INTERVAL) {
     const waitTime = MIN_REQUEST_INTERVAL - timeSinceLastRequest;
-    console.log(`⏱️ Rate limiting: Waiting ${Math.round(waitTime / 1000)}s...`);
     await new Promise((resolve) => setTimeout(resolve, waitTime));
   }
-
   lastRequestTime = Date.now();
   return requestFn();
 }
 
-// Retry logic
+// Retry helper
 async function retryOnQuotaExceeded<T>(
   fn: () => Promise<T>,
   maxRetries: number = 2,
-  baseDelay: number = 5000
+  baseDelay: number = 1000,
 ): Promise<T> {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -57,25 +78,9 @@ async function retryOnQuotaExceeded<T>(
     } catch (error: any) {
       const is429 =
         error.message?.includes("429") || error.message?.includes("quota");
-      const isLastAttempt = attempt === maxRetries;
-
-      // ✅ FIX 1: Jika errornya 429 (Quota Habis), LANGSUNG STOP. JANGAN RETRY.
-      if (is429) {
-        console.error("🚫 Quota Exceeded detected. Stopping retries.");
-        throw error;
-      }
-
-      // Hanya retry jika error selain 429 (misal: network error, 500, dll)
-      if (isLastAttempt) {
-        throw error;
-      }
-
+      if (is429) throw error;
+      if (attempt === maxRetries) throw error;
       const delay = baseDelay * Math.pow(2, attempt);
-      console.log(
-        `⚠️ Server error sementara. Retrying in ${delay / 1000}s... (Attempt ${
-          attempt + 1
-        }/${maxRetries})`
-      );
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
@@ -84,29 +89,29 @@ async function retryOnQuotaExceeded<T>(
 
 export const getTutorResponse = async (
   history: ChatMessage[],
-  context?: string
+  context?: string,
 ): Promise<string> => {
+  if (!API_KEY) {
+    return "⚠️ **API Key Belum Diatur**.\n\nSilakan buka menu **API Settings** di sidebar dan masukkan API Key Anda.";
+  }
+  if (!genAI) throw new Error("AI Model not initialized");
+
   console.log("💬 --- [getTutorResponse] START ---");
-  console.log("💬 History length:", history.length);
 
   try {
-    console.log("💬 Initializing Model:", DEFAULT_MODEL);
     const model = genAI.getGenerativeModel({
       model: DEFAULT_MODEL,
-      systemInstruction:
-        MASTER_PERSONA_INSTRUCTION +
-        `\nKonteks: ${context || "Belajar"}. JANGAN GUNAKAN $.`,
+      // System Instruction sudah diupdate di atas
+      systemInstruction: MASTER_PERSONA_INSTRUCTION,
     });
 
     return await retryOnQuotaExceeded(async () => {
       return await rateLimitedRequest(async () => {
-        // Build chat history
         let chatHistory = history.slice(0, -1).map((h) => ({
           role: h.role === "user" ? "user" : "model",
           parts: [{ text: h.text }],
         }));
 
-        // ✅ FIX: Hapus pesan di awal jika role-nya 'model' agar pesan pertama adalah 'user'
         while (chatHistory.length > 0 && chatHistory[0].role === "model") {
           chatHistory.shift();
         }
@@ -116,48 +121,27 @@ export const getTutorResponse = async (
 
         const result = await chat.sendMessage(lastMessage);
         const response = await result.response;
-
-        console.log("✅ Tutor response received");
         return response.text();
       });
     });
   } catch (error: any) {
-    console.error("❌ --- [getTutorResponse] ERROR ---");
-    console.error("❌ Error Message:", error.message);
-
-    if (error.message?.includes("API key")) {
-      return "⚠️ API Key tidak valid. Periksa file .env.local Anda.";
-    }
-
-    if (error.message?.includes("429") || error.message?.includes("quota")) {
-      return "⚠️ Quota API habis untuk hari ini. Coba lagi besok atau upgrade ke paid plan.";
-    }
-
-    if (error.message?.includes("400")) {
-      return "⚠️ Request tidak valid. Coba refresh halaman.";
-    }
-
-    if (error.message?.includes("404")) {
-      return `⚠️ Model "${DEFAULT_MODEL}" tidak ditemukan (404). Coba ganti ke 'gemini-pro'.`;
-    }
-
-    return "⚠️ Maaf, terjadi kesalahan. Silakan coba lagi.";
+    console.error("❌ Error:", error.message);
+    if (error.message?.includes("API key not valid"))
+      return "⚠️ API Key Invalid.";
+    if (error.message?.includes("quota")) return "⚠️ Kuota Habis.";
+    return "⚠️ Error koneksi.";
   }
 };
 
 export const getTopicExplanation = async (
   topic: string,
-  subtest: string
+  subtest: string,
 ): Promise<AIAnalysis> => {
-  console.log("📖 --- [getTopicExplanation] START ---");
-  console.log("📖 Topic:", topic, "| Subtest:", subtest);
+  if (!API_KEY) throw new Error("No API Key");
+  if (!genAI) throw new Error("AI Not Init");
 
   const cacheKey = `${subtest}-${topic}`;
-
-  if (topicCache.has(cacheKey)) {
-    console.log("📦 Using cached analysis for:", topic);
-    return topicCache.get(cacheKey)!;
-  }
+  if (topicCache.has(cacheKey)) return topicCache.get(cacheKey)!;
 
   const prompt = `
 Analisis mendalam materi SNBT berikut:
@@ -167,14 +151,15 @@ Subtest: ${subtest}
 Berikan analisis dalam 4 format:
 1. QUICK: Tips cepat dan strategi praktis (3-4 poin singkat)
 2. SIMPLE: Analogi sederhana dengan contoh dunia nyata
-3. COMPLEX: Penjelasan akademik mendalam dengan simbol Unicode
+3. COMPLEX: Penjelasan akademik mendalam. GUNAKAN SIMBOL UNICODE (x², √, π), JANGAN PAKAI $ atau \\.
 4. INTERACTIVE: 2-3 pertanyaan reflektif untuk siswa
 
 Plus 1 contoh soal HOTS lengkap dengan jawaban dan step-by-step solution.
 
 PENTING:
-- Gunakan simbol Unicode: →, ¬, ∧, ∨, ∴, ↔, ≡, √, π, ±, ≠, ≤, ≥, ², ³
-- JANGAN gunakan $ atau backslash
+- Tulis rumus dengan simbol biasa: x², √, π, ≠, ≥, ≤.
+- JANGAN gunakan tanda dolar $.
+- JANGAN gunakan backslash \\.
 - Gunakan \\n\\n untuk paragraf baru
 - Bahasa Indonesia yang jelas
 
@@ -193,73 +178,47 @@ RETURN HANYA JSON dengan format:
 `;
 
   try {
-    console.log("🤖 Generating topic analysis. Model:", DEFAULT_MODEL);
-
     const model = genAI.getGenerativeModel({
       model: DEFAULT_MODEL,
       systemInstruction: MASTER_PERSONA_INSTRUCTION,
-      generationConfig: {
-        temperature: 0.7,
-        maxOutputTokens: 4096,
-        responseMimeType: "application/json",
-      },
+      generationConfig: { responseMimeType: "application/json" },
     });
 
     const result = await retryOnQuotaExceeded(async () => {
       return await rateLimitedRequest(async () => {
         const response = await model.generateContent(prompt);
-        const text = response.response.text();
-
-        // Clean response
-        const cleanText = text
+        const text = response.response
+          .text()
           .replace(/```json\n?/g, "")
           .replace(/```\n?/g, "")
           .trim();
-        return JSON.parse(cleanText);
+        return JSON.parse(text);
       });
     });
 
-    if (
-      !result.quick ||
-      !result.simple ||
-      !result.complex ||
-      !result.interactive
-    ) {
-      throw new Error("Incomplete response from AI");
-    }
-
     topicCache.set(cacheKey, result);
-    console.log("✅ Topic analysis generated and cached");
-
     return result;
   } catch (error: any) {
-    console.error("❌ --- [getTopicExplanation] ERROR ---");
-    console.error("❌ Error Message:", error.message);
-
+    console.error(error);
     return {
-      complex: `Maaf, terjadi kesalahan: ${error.message}`,
-      simple: "Sistem sedang mengalami gangguan. Silakan coba lagi.",
-      quick: "Tips: Refresh halaman dan coba lagi.",
-      interactive: "Gunakan materi offline sambil menunggu.",
-      example: {
-        question: "Contoh soal tidak dapat di-generate saat ini.",
-        answer: "-",
-        stepByStep: "Coba lagi nanti.",
-      },
+      complex: "Gagal memuat analisis.",
+      simple: "Cek koneksi.",
+      quick: "Coba lagi.",
+      interactive: "Cek Settings.",
+      example: { question: "-", answer: "-", stepByStep: "-" },
     };
   }
 };
 
+// ✅ PERBAIKAN PROMPT: getDeepAnalysis juga diupdate agar tidak pakai simbol aneh
 export const getDeepAnalysis = async (
-  question: Question
+  question: Question,
 ): Promise<AIAnalysis> => {
-  console.log("🔍 --- [getDeepAnalysis] START ---");
-  const cacheKey = question.id || question.text;
+  if (!API_KEY) throw new Error("No API Key");
+  if (!genAI) throw new Error("AI Not Init");
 
-  if (analysisCache.has(cacheKey)) {
-    console.log("📦 Using cached analysis for question:", question.id);
-    return analysisCache.get(cacheKey)!;
-  }
+  const cacheKey = question.id || question.text;
+  if (analysisCache.has(cacheKey)) return analysisCache.get(cacheKey)!;
 
   const prompt = `
 Analisis soal SNBT berikut:
@@ -276,7 +235,7 @@ Jawaban Benar: ${String.fromCharCode(65 + question.correctAnswer)}. ${
   }
 
 Berikan analisis dalam 4 format berbeda (quick, simple, complex, interactive).
-Gunakan simbol Unicode, JANGAN $ atau backslash.
+WAJIB MENGGUNAKAN SIMBOL UNICODE STANDAR (x², √, π) DAN TIDAK BOLEH MENGGUNAKAN TANDA DOLAR ($) ATAU BACKSLASH (\).
 
 RETURN HANYA JSON:
 {
@@ -331,11 +290,11 @@ RETURN HANYA JSON:
 
 export const generateDynamicQuestions = async (
   subtest: SubtestType,
-  count: number = 20 // Default di service adalah 20
+  count: number = 20,
 ): Promise<Question[]> => {
-  console.log("🎯 --- [generateDynamicQuestions] START ---");
+  if (!API_KEY) throw new Error("No API Key");
+  if (!genAI) throw new Error("AI Not Init");
 
-  // Mengurangi jumlah jika caller tidak spesifik (meski App.tsx mungkin tetap paksa 30)
   const finalCount = count > 20 ? 20 : count;
 
   const prompt = `
@@ -351,12 +310,14 @@ RETURN HANYA JSON ARRAY:
     "quickTrick": "trick text"
   }
 ]
+
+PENTING: Pada bagian "text" atau "explanation", JANGAN GUNAKAN TANDA DOLAR ($) untuk rumus matematika. Gunakan simbol biasa seperti x², √, π, ≠, ≥, ≤.
 `;
 
   try {
     console.log(
       `🎯 Generating ${finalCount} questions for ${subtest}. Model:`,
-      DEFAULT_MODEL
+      DEFAULT_MODEL,
     );
 
     const model = genAI.getGenerativeModel({
@@ -364,7 +325,7 @@ RETURN HANYA JSON ARRAY:
       systemInstruction: MASTER_PERSONA_INSTRUCTION,
       generationConfig: {
         temperature: 0.8,
-        maxOutputTokens: 12000, // ✅ UPDATE: Dinaikkan untuk antisipasi soal panjang
+        maxOutputTokens: 12000,
         responseMimeType: "application/json",
       },
     });
@@ -374,41 +335,29 @@ RETURN HANYA JSON ARRAY:
         const response = await model.generateContent(prompt);
         const text = response.response.text();
 
-        // --- FIX PEMBERSIH JSON PALING ROBUST ---
+        // --- FIX PEMBERSIH JSON ---
         let cleanText = text
           .replace(/```json\n?/g, "")
           .replace(/```\n?/g, "")
           .trim();
 
-        // 1. FIX SMART QUOTES (Sangat sering penyebab error)
-        // Mengganti kutipan ganda miring “ ” dengan kutipan lurus "
+        // Fix Smart Quotes
         cleanText = cleanText.replace(
           /[\u201C\u201D\u201E\u201F\u2033\u2036]/g,
-          '"'
+          '"',
         );
-        // Mengganti kutipan tunggal miring ‘ ’ dengan kutipan lurus '
         cleanText = cleanText.replace(
           /[\u2018\u2019\u201A\u201B\u2032\u2035]/g,
-          "'"
+          "'",
         );
-
-        // 2. FIX CONTROL CHARACTERS (Backspace dll yang mengacaukan JSON)
         cleanText = cleanText.replace(/[\x00-\x1F\x7F-\x9F]/g, "");
-
-        // 3. FLATTEN KE SATU BARIS
         cleanText = cleanText.replace(/(\r\n|\n|\r)/gm, " ");
-
-        // 4. HAPUS KOMA EKSTRA DI AKHIR OBJEK
         cleanText = cleanText.replace(/,\s*([\]}])/g, "$1");
 
         try {
           return JSON.parse(cleanText);
         } catch (e) {
-          console.error("❌ Gagal parse JSON setelah dibersihkan:", e);
-          console.error(
-            "🧪 Cek potongan teks (500 char terakhir):",
-            cleanText.slice(-500)
-          );
+          console.error("❌ Gagal parse JSON:", e);
           throw e;
         }
       });
@@ -426,65 +375,5 @@ RETURN HANYA JSON ARRAY:
     console.error("❌ --- [generateDynamicQuestions] ERROR ---");
     console.error("❌ Error Message:", error.message);
     return [];
-  }
-};
-
-export const testGeminiConnection = async (): Promise<boolean> => {
-  console.log("🧪 --- [testGeminiConnection] START ---");
-  try {
-    console.log("🧪 Model used for test:", DEFAULT_MODEL);
-
-    const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
-
-    const response = await rateLimitedRequest(async () => {
-      const result = await model.generateContent("Test");
-      return result.response.text();
-    });
-
-    console.log("✅ Gemini API is working! Response:", response);
-    return true;
-  } catch (error: any) {
-    console.error("❌ --- [testGeminiConnection] FAILED ---");
-    console.error("❌ Error Message:", error.message);
-    return false;
-  }
-};
-
-// ✅ FUNGSI DIAGNOSTIK: Cek Model yang Tersedia
-export const listAvailableModels = async () => {
-  console.log("🔍 --- [DIAGNOSIS MODEL] START ---");
-  console.log("🔍 Mencoba mengambil daftar model langsung dari Google...");
-
-  try {
-    // Memanggil API listModels secara manual untuk diagnosis
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${API_KEY}`
-    );
-    const data = await response.json();
-
-    if (data.error) {
-      console.error("❌ Gagal mengambil data:", data.error.message);
-      console.log(
-        "💡 Penyebab mungkin: Region account Anda tidak support, atau API Key belum jalan."
-      );
-      return;
-    }
-
-    console.log("✅ SUKSES! Google memberikan daftar model:");
-    console.log("---------------------------------------------------");
-    console.table(
-      data.models.map((m: any) => ({
-        "Nama Lengkap (Pakai ini)": m.name,
-        "Nama Singkat": m.name.split("/").pop(),
-        "Display Name": m.displayName,
-      }))
-    );
-    console.log("---------------------------------------------------");
-    console.log("👆 LIHAT TABEL DI CONSOLE!");
-    console.log(
-      "👆 Salin isi kolom 'Nama Lengkap', lalu ganti DEFAULT_MODEL dengan itu."
-    );
-  } catch (e) {
-    console.error("❌ Error Network:", e);
   }
 };

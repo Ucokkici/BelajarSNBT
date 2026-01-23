@@ -13,29 +13,33 @@ import {
   Database,
   Sparkles,
   Instagram,
+  Key, // Import baru untuk icon settings
 } from "lucide-react";
 import Home from "./pages/Home";
 import Learn from "./pages/Learn";
 import Practice from "./pages/Practice";
 import Analysis from "./pages/Analysis";
 import Tutor from "./pages/Tutor";
+import SettingsPage from "./pages/Settings"; // Import Komponen Settings Baru
 import { Progress, SubtestType } from "./types";
 import { dbService } from "./services/dbService";
 import { generateDynamicQuestions } from "./services/geminiService";
 
 const App: React.FC = () => {
   const [progress, setProgress] = useState<Progress>(() =>
-    dbService.loadProgress()
+    dbService.loadProgress(),
   );
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncProgress, setSyncProgress] = useState(0);
 
+  // Simpan progress setiap berubah
   useEffect(() => {
     dbService.saveProgress(progress);
   }, [progress]);
 
+  // PWA Install Prompt
   useEffect(() => {
     window.addEventListener("beforeinstallprompt", (e) => {
       e.preventDefault();
@@ -43,8 +47,19 @@ const App: React.FC = () => {
     });
   }, []);
 
+  // Fungsi Download Soal (Sudah ada di kode Anda, dibiarkan apa adanya)
   const handleBulkSync = async () => {
     if (isSyncing) return;
+
+    // ✅ CEK TAMBAHAN: Pastikan user sudah punya API Key sebelum download
+    const apiKey = localStorage.getItem("user_gemini_api_key");
+    if (!apiKey) {
+      alert(
+        "⚠️ Anda belum mengatur API Key!\n\nSilakan buka menu 'API Settings' di sidebar bawah dan masukkan kunci akses Google Anda terlebih dahulu.",
+      );
+      return;
+    }
+
     setIsSyncing(true);
     setSyncProgress(0);
 
@@ -55,12 +70,9 @@ const App: React.FC = () => {
       for (let i = 0; i < subtests.length; i++) {
         const subtest = subtests[i];
 
-        // ⚠️ LOGIKA PINTAR: Matematika lebih berat dan sering error JSON
-        // Jadi kita pakai 10 soal untuk Kuantitatif, 20 untuk yang lain
         const isMath =
           subtest.toLowerCase().includes("kuantitatif") ||
           subtest.toLowerCase().includes("matematika");
-
         const count = isMath ? 10 : 20;
 
         console.log(`🎯 Downloading for ${subtest} (Count: ${count})...`);
@@ -77,10 +89,9 @@ const App: React.FC = () => {
       }
 
       alert(
-        `Sinkronisasi Selesai! Berhasil menambahkan ${totalAdded} soal baru.`
+        `Sinkronisasi Selesai! Berhasil menambahkan ${totalAdded} soal baru.`,
       );
     } catch (err: any) {
-      // ✅ PERBAIKAN: Cek pesan error untuk memberi Alert Spesifik
       const errorMessage = err.message || String(err);
 
       if (
@@ -90,13 +101,12 @@ const App: React.FC = () => {
       ) {
         alert(
           "⚠️ KUOTA HABIS!\n\n" +
-            "Anda telah mencapai batas permintaan AI hari ini.\n" +
-            "💡 Solusi:\n" +
-            "Tunggu hingga besok pagi (Reset jam 00:00 WIB)"
+            "API Key Anda telah mencapai batas permintaan hari ini.\n" +
+            "💡 Solusi: Coba lagi besok atau gunakan API Key lain.",
         );
       } else {
         alert(
-          "Terjadi kendala saat menghubungi AI. Periksa koneksi internet Anda."
+          "Terjadi kendala saat menghubungi AI. Periksa koneksi internet Anda.",
         );
       }
     } finally {
@@ -116,7 +126,7 @@ const App: React.FC = () => {
   const handleReset = () => {
     if (
       confirm(
-        "⚠️ PERINGATAN: Ini akan menghapus SELURUH bank soal, progres belajar, dan skor Anda secara permanen. Lanjutkan?"
+        "⚠️ PERINGATAN: Ini akan menghapus SELURUH bank soal, progres belajar, dan skor Anda secara permanen. Lanjutkan?",
       )
     ) {
       dbService.clearData();
@@ -130,6 +140,7 @@ const App: React.FC = () => {
   return (
     <HashRouter>
       <div className="flex h-screen bg-slate-50 overflow-hidden">
+        {/* Overlay Mobile */}
         {isSidebarOpen && (
           <div
             className="fixed inset-0 bg-black/50 z-40 lg:hidden"
@@ -137,6 +148,7 @@ const App: React.FC = () => {
           />
         )}
 
+        {/* Sidebar */}
         <aside
           className={`
           fixed lg:static inset-y-0 left-0 w-64 bg-white border-r border-slate-200 z-50 transform transition-transform duration-300
@@ -194,6 +206,7 @@ const App: React.FC = () => {
           </nav>
 
           <div className="absolute bottom-6 left-0 right-0 px-6 space-y-3">
+            {/* Tombol Download Soal (Manual) */}
             <div className="relative">
               <button
                 onClick={handleBulkSync}
@@ -208,6 +221,7 @@ const App: React.FC = () => {
               </button>
             </div>
 
+            {/* Tombol Install App */}
             {deferredPrompt && (
               <button
                 onClick={handleInstall}
@@ -217,6 +231,7 @@ const App: React.FC = () => {
               </button>
             )}
 
+            {/* Info Database */}
             <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl flex items-center justify-between">
               <div>
                 <p className="text-[10px] font-bold text-slate-400 uppercase">
@@ -229,7 +244,17 @@ const App: React.FC = () => {
               <Database size={20} className="text-slate-300" />
             </div>
 
-            <div className="pt-2 border-t border-slate-100 flex flex-col gap-1">
+            {/* TAMBAHAN: Menu API Settings */}
+            <div className="pt-2 border-t border-slate-100">
+              <SidebarLink
+                to="/settings"
+                icon={<Key size={16} />}
+                label="API Settings"
+                onClick={() => setIsSidebarOpen(false)}
+              />
+            </div>
+
+            <div className="flex flex-col gap-1">
               <a
                 href="https://www.instagram.com/akbarsayangmamah/"
                 target="_blank"
@@ -249,6 +274,7 @@ const App: React.FC = () => {
           </div>
         </aside>
 
+        {/* Main Content */}
         <main className="flex-1 flex flex-col overflow-hidden">
           <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 shrink-0">
             <button
@@ -265,7 +291,12 @@ const App: React.FC = () => {
 
           <div className="flex-1 overflow-y-auto p-4 md:p-8 no-scrollbar">
             <Routes>
-              <Route path="/" element={<Home progress={progress} />} />
+              <Route
+                path="/"
+                element={
+                  <Home progress={progress} setProgress={updateProgress} />
+                }
+              />
               <Route
                 path="/learn"
                 element={
@@ -283,6 +314,9 @@ const App: React.FC = () => {
                 element={<Analysis progress={progress} />}
               />
               <Route path="/tutor" element={<Tutor />} />
+
+              {/* ROUTE BARU: Halaman Settings */}
+              <Route path="/settings" element={<SettingsPage />} />
             </Routes>
           </div>
         </main>
@@ -291,6 +325,7 @@ const App: React.FC = () => {
   );
 };
 
+// Komponen SidebarLink Helper
 const SidebarLink = ({ to, icon, label, onClick }: any) => {
   const location = useLocation();
   const isActive = location.pathname === to;
