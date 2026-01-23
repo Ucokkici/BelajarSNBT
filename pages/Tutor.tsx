@@ -188,11 +188,11 @@ const Tutor: React.FC = () => {
 
       {/* Input */}
       <div className="p-6 bg-white border-t border-slate-100 shrink-0">
-        <div className="flex gap-4 items-center bg-slate-50 border border-slate-200 p-2 rounded-2xl focus-within:ring-4 focus-within:ring-indigo-100 focus-within:border-indigo-500 transition-all shadow-inner">
+        <div className="flex gap-2 items-center bg-slate-50 border border-slate-200 p-1.5 md:p-2 rounded-2xl focus-within:ring-4 focus-within:ring-indigo-100 focus-within:border-indigo-500 transition-all shadow-inner">
           <input
             type="text"
             placeholder="Coba ketik 'LATIHAN' atau 'BERI TRIK SNBT'..."
-            className="flex-1 bg-transparent border-none outline-none px-4 text-sm font-bold text-slate-700"
+            className="flex-1 bg-transparent border-none outline-none px-3 md:px-4 py-2 text-sm font-bold text-slate-700"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleSend()}
@@ -201,19 +201,19 @@ const Tutor: React.FC = () => {
             onClick={handleSend}
             disabled={isLoading}
             className={`
-    h-12 w-12 sm:h-11 sm:w-11
-    rounded-xl sm:rounded-lg
-    flex items-center justify-center
-    transition-all duration-150
-    touch-manipulation
-    ${
-      isLoading
-        ? "bg-slate-200 text-slate-400"
-        : "bg-indigo-600 text-white hover:bg-indigo-700 shadow-lg shadow-indigo-200 active:scale-95"
-    }
-  `}
+              h-9 w-9 md:h-10 md:w-10
+              rounded-xl
+              flex items-center justify-center shrink-0
+              transition-all duration-150
+              touch-manipulation
+              ${
+                isLoading
+                  ? "bg-slate-200 text-slate-400"
+                  : "bg-indigo-600 text-white hover:bg-indigo-700 shadow-lg shadow-indigo-200 active:scale-95"
+              }
+            `}
           >
-            <Send size={18} />
+            <Send size={17} />
           </button>
         </div>
         <div className="flex justify-center gap-4 mt-4 overflow-x-auto no-scrollbar pb-1">
