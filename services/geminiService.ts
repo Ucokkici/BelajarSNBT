@@ -1,7 +1,6 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { ChatMessage, SubtestType, Question, AIAnalysis } from "../types";
 
-// --- LOGIKA BARU: Baca API Key dari LocalStorage User ---
 const getUserApiKey = (): string => {
   const key = localStorage.getItem("user_gemini_api_key");
   if (!key) return "";
@@ -16,7 +15,6 @@ console.log(
   API_KEY ? "✅ Loaded from User Storage" : "❌ Not Found",
 );
 
-// Inisialisasi Model
 let genAI: GoogleGenerativeAI | null = null;
 if (API_KEY) {
   genAI = new GoogleGenerativeAI(API_KEY);
@@ -25,9 +23,9 @@ if (API_KEY) {
 const analysisCache = new Map<string, AIAnalysis>();
 const topicCache = new Map<string, AIAnalysis>();
 
-// ✅ PERBAIKAN PROMPT: Di sini kita atur agar AI TIDAK BOLEH pakai simbol web/matetika coding
 const MASTER_PERSONA_INSTRUCTION = `
-Anda adalah AI Master Tutor SNBT Profesional.
+Anda adalah AI Master Tutor SNBT Profesional dengan akurasi 100%.
+
 PERATURAN PENULISAN MATEMATIKA (WAJIB DIPATUHI):
 1. DILARANG KERAS MENGGUNAKAN TANDA DOLAR ($) untuk rumus. CONTOH SALAH: $X^2 = 49$.
 2. DILARANG MENGGUNAKAN BACKSLASH (\) untuk perintah LaTeX.
@@ -45,13 +43,18 @@ CONTOH PENULISAN YANG BENAR:
 - Rumus luas lingkaran adalah L = π × r².
 - Nilai dari √144 adalah 12.
 
+ATURAN AKURASI SOAL:
+1. Setiap soal HARUS memiliki SATU dan HANYA SATU jawaban yang benar
+2. Verifikasi ulang setiap opsi jawaban sebelum menentukan correctAnswer
+3. Pastikan logika soal koheren dan tidak ambigu
+4. Untuk soal matematika/kuantitatif, verifikasi perhitungan 2x sebelum output
+5. Jangan membuat soal yang memerlukan asumsi tidak tertulis
+
 Jelaskan materi dengan bahasa Indonesia yang jelas, cepat, dan to-the-point.
 `;
 
-// Gunakan model flash (lebih cepat & murah)
 const DEFAULT_MODEL = "models/gemini-flash-lite-latest";
 
-// Rate limiting helper
 let lastRequestTime = 0;
 const MIN_REQUEST_INTERVAL = 1000;
 
@@ -66,7 +69,6 @@ async function rateLimitedRequest<T>(requestFn: () => Promise<T>): Promise<T> {
   return requestFn();
 }
 
-// Retry helper
 async function retryOnQuotaExceeded<T>(
   fn: () => Promise<T>,
   maxRetries: number = 2,
@@ -87,6 +89,88 @@ async function retryOnQuotaExceeded<T>(
   throw new Error("Max retries exceeded");
 }
 
+// ✅ PERBAIKAN UTAMA: Function untuk repair incomplete JSON
+function repairIncompleteJSON(text: string): string {
+  let cleaned = text.trim();
+
+  // Hapus markdown
+  cleaned = cleaned.replace(/```json\n?/gi, "");
+  cleaned = cleaned.replace(/```\n?/g, "");
+
+  // Hapus control characters
+  cleaned = cleaned.replace(/[\x00-\x1F\x7F-\x9F]/g, "");
+
+  // Fix quotes
+  cleaned = cleaned.replace(/[\u201C\u201D\u201E\u201F\u2033\u2036]/g, '"');
+  cleaned = cleaned.replace(/[\u2018\u2019\u201A\u201B\u2032\u2035]/g, "'");
+
+  // Normalize whitespace
+  cleaned = cleaned.replace(/(\r\n|\n|\r)/gm, " ");
+  cleaned = cleaned.replace(/\s+/g, " ");
+
+  // Fix trailing commas
+  cleaned = cleaned.replace(/,\s*([\]}])/g, "$1");
+
+  // ✅ PERBAIKAN: Jika JSON array tidak lengkap, potong di object terakhir yang valid
+  if (cleaned.startsWith("[") && !cleaned.endsWith("]")) {
+    console.warn("⚠️ Incomplete JSON array detected, attempting repair...");
+
+    // Cari posisi terakhir dari "}" yang valid
+    let lastValidBrace = -1;
+    let braceCount = 0;
+    let inString = false;
+    let escapeNext = false;
+
+    for (let i = 0; i < cleaned.length; i++) {
+      const char = cleaned[i];
+
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+
+      if (char === "\\") {
+        escapeNext = true;
+        continue;
+      }
+
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+
+      if (inString) continue;
+
+      if (char === "{") {
+        braceCount++;
+      } else if (char === "}") {
+        braceCount--;
+        if (braceCount === 0) {
+          lastValidBrace = i;
+        }
+      }
+    }
+
+    if (lastValidBrace > 0) {
+      // Potong sampai object terakhir yang lengkap
+      cleaned = cleaned.substring(0, lastValidBrace + 1);
+
+      // Hapus trailing comma jika ada
+      cleaned = cleaned.replace(/,\s*$/, "");
+
+      // Tutup array
+      cleaned = cleaned + "]";
+
+      console.log("✅ JSON repaired successfully");
+    } else {
+      console.error("❌ Cannot find valid JSON object to repair");
+      throw new Error("Cannot repair incomplete JSON");
+    }
+  }
+
+  return cleaned;
+}
+
 export const getTutorResponse = async (
   history: ChatMessage[],
   context?: string,
@@ -101,7 +185,6 @@ export const getTutorResponse = async (
   try {
     const model = genAI.getGenerativeModel({
       model: DEFAULT_MODEL,
-      // System Instruction sudah diupdate di atas
       systemInstruction: MASTER_PERSONA_INSTRUCTION,
     });
 
@@ -181,25 +264,25 @@ RETURN HANYA JSON dengan format:
     const model = genAI.getGenerativeModel({
       model: DEFAULT_MODEL,
       systemInstruction: MASTER_PERSONA_INSTRUCTION,
-      generationConfig: { responseMimeType: "application/json" },
+      generationConfig: {
+        responseMimeType: "application/json",
+        maxOutputTokens: 2048,
+      },
     });
 
     const result = await retryOnQuotaExceeded(async () => {
       return await rateLimitedRequest(async () => {
         const response = await model.generateContent(prompt);
-        const text = response.response
-          .text()
-          .replace(/```json\n?/g, "")
-          .replace(/```\n?/g, "")
-          .trim();
-        return JSON.parse(text);
+        const text = response.response.text();
+        const cleaned = repairIncompleteJSON(text);
+        return JSON.parse(cleaned);
       });
     });
 
     topicCache.set(cacheKey, result);
     return result;
   } catch (error: any) {
-    console.error(error);
+    console.error("❌ [getTopicExplanation] Error:", error.message);
     return {
       complex: "Gagal memuat analisis.",
       simple: "Cek koneksi.",
@@ -210,15 +293,45 @@ RETURN HANYA JSON dengan format:
   }
 };
 
-// ✅ PERBAIKAN PROMPT: getDeepAnalysis juga diupdate agar tidak pakai simbol aneh
 export const getDeepAnalysis = async (
   question: Question,
 ): Promise<AIAnalysis> => {
   if (!API_KEY) throw new Error("No API Key");
   if (!genAI) throw new Error("AI Not Init");
 
+  // ✅ VALIDASI KETAT: Pastikan correctAnswer valid
+  if (
+    typeof question.correctAnswer !== "number" ||
+    question.correctAnswer < 0 ||
+    question.correctAnswer >= question.options.length
+  ) {
+    console.error("❌ CRITICAL: Invalid correctAnswer index!");
+    console.error("Question:", question.id, "| Text:", question.text);
+    console.error(
+      "correctAnswer:",
+      question.correctAnswer,
+      "| Options count:",
+      question.options.length,
+    );
+    throw new Error(
+      `Invalid correctAnswer index: ${question.correctAnswer} for question with ${question.options.length} options`,
+    );
+  }
+
   const cacheKey = question.id || question.text;
   if (analysisCache.has(cacheKey)) return analysisCache.get(cacheKey)!;
+
+  // ✅ DEBUG: Log soal yang sedang dianalisis
+  console.log("📊 [getDeepAnalysis] Analyzing Question:");
+  console.log(`   ID: ${question.id}`);
+  console.log(`   Text: ${question.text.substring(0, 80)}...`);
+  console.log(`   CorrectAnswer Index: ${question.correctAnswer}`);
+  console.log(
+    `   CorrectAnswer Letter: ${String.fromCharCode(65 + question.correctAnswer)}`,
+  );
+  console.log(
+    `   CorrectAnswer Text: ${question.options[question.correctAnswer]}`,
+  );
 
   const prompt = `
 Analisis soal SNBT berikut:
@@ -254,7 +367,7 @@ RETURN HANYA JSON:
       systemInstruction: MASTER_PERSONA_INSTRUCTION,
       generationConfig: {
         temperature: 0.7,
-        maxOutputTokens: 3072,
+        maxOutputTokens: 2048,
         responseMimeType: "application/json",
       },
     });
@@ -263,16 +376,27 @@ RETURN HANYA JSON:
       return await rateLimitedRequest(async () => {
         const response = await model.generateContent(prompt);
         const text = response.response.text();
-        const cleanText = text
-          .replace(/```json\n?/g, "")
-          .replace(/```\n?/g, "")
-          .trim();
-        return JSON.parse(cleanText);
+        const cleaned = repairIncompleteJSON(text);
+        const parsed = JSON.parse(cleaned);
+
+        // ✅ TRACKING: Tambahkan metadata untuk validasi
+        return {
+          ...parsed,
+          _questionId: question.id,
+          _questionText: question.text.substring(0, 100),
+          _correctAnswerIndex: question.correctAnswer,
+          _correctAnswerText: question.options[question.correctAnswer],
+          _timestamp: new Date().toISOString(),
+        };
       });
     });
 
     analysisCache.set(cacheKey, result);
     console.log("✅ Deep analysis generated and cached");
+    console.log(`   Question ID: ${result._questionId}`);
+    console.log(
+      `   Correct Answer: ${String.fromCharCode(65 + result._correctAnswerIndex)}`,
+    );
 
     return result;
   } catch (error: any) {
@@ -288,92 +412,174 @@ RETURN HANYA JSON:
   }
 };
 
+// ✅ PERBAIKAN: Generate soal dengan jumlah lebih kecil dan error handling lebih baik
 export const generateDynamicQuestions = async (
   subtest: SubtestType,
-  count: number = 20,
+  count: number = 10, // ✅ Default turun ke 10
+  hotsOnly: boolean = false,
 ): Promise<Question[]> => {
   if (!API_KEY) throw new Error("No API Key");
   if (!genAI) throw new Error("AI Not Init");
 
-  const finalCount = count > 20 ? 20 : count;
+  // ✅ PENTING: Batasi maksimal 10 soal per request untuk hindari truncation
+  const finalCount = Math.min(count, 10);
+
+  const hotsInstruction = hotsOnly
+    ? `
+KATEGORI SOAL: HOTS (Higher Order Thinking Skills) ONLY
+- Soal harus memerlukan analisis, evaluasi, atau kreasi
+- Tidak boleh soal hafalan atau rumus langsung
+- Harus ada konteks atau skenario yang kompleks
+- Minimal 2 langkah pemikiran untuk menyelesaikan
+`
+    : "";
 
   const prompt = `
-Generate ${finalCount} soal SNBT berkualitas tinggi untuk subtest: ${subtest}
+Generate EXACTLY ${finalCount} soal SNBT berkualitas tinggi untuk subtest: ${subtest}
 
-RETURN HANYA JSON ARRAY:
+${hotsInstruction}
+
+ATURAN VALIDASI KETAT:
+1. Setiap soal HARUS memiliki TEPAT SATU jawaban benar
+2. Verifikasi perhitungan matematis MINIMAL 2 KALI sebelum output
+3. Pastikan tidak ada ambiguitas dalam pertanyaan
+4. Opsi pengecoh harus masuk akal tapi jelas salah
+5. Untuk soal kuantitatif/matematika: tunjukkan perhitungan di explanation
+
+CRITICAL: Generate EXACTLY ${finalCount} questions, no more, no less.
+
+FORMAT JSON - OUTPUT HARUS ARRAY DENGAN ${finalCount} ELEMEN:
 [
   {
-    "text": "question text",
-    "options": ["A", "B", "C", "D", "E"],
-    "correctAnswer": 0-4,
-    "explanation": "explanation text",
-    "quickTrick": "trick text"
+    "text": "Teks soal lengkap dan jelas (max 300 karakter)",
+    "options": ["Opsi A", "Opsi B", "Opsi C", "Opsi D", "Opsi E"],
+    "correctAnswer": 0,
+    "explanation": "Penjelasan singkat (max 200 karakter)",
+    "quickTrick": "Trik cepat (max 100 karakter)"
   }
 ]
 
-PENTING: Pada bagian "text" atau "explanation", JANGAN GUNAKAN TANDA DOLAR ($) untuk rumus matematika. Gunakan simbol biasa seperti x², √, π, ≠, ≥, ≤.
+PENTING SEKALI:
+- Index correctAnswer dimulai dari 0 (A=0, B=1, C=2, D=3, E=4)
+- VERIFIKASI ULANG bahwa index correctAnswer sesuai dengan opsi yang benar
+- JANGAN GUNAKAN $ atau \\ di text atau explanation
+- Gunakan simbol unicode: x², √, π, ≠, ≥, ≤
+- Pastikan logika soal 100% benar sebelum output
+- JANGAN TAMBAHKAN TEKS APAPUN DI LUAR JSON ARRAY
+- Buat explanation SINGKAT dan PADAT (max 200 karakter)
+- WAJIB generate ${finalCount} soal, tidak kurang tidak lebih
 `;
 
   try {
     console.log(
-      `🎯 Generating ${finalCount} questions for ${subtest}. Model:`,
+      `🎯 Generating ${finalCount} ${hotsOnly ? "HOTS " : ""}questions for ${subtest}. Model:`,
       DEFAULT_MODEL,
     );
 
     const model = genAI.getGenerativeModel({
       model: DEFAULT_MODEL,
-      systemInstruction: MASTER_PERSONA_INSTRUCTION,
+      systemInstruction:
+        MASTER_PERSONA_INSTRUCTION +
+        "\n\nVERIFIKASI JAWABAN: Sebelum output, cek ulang bahwa correctAnswer index sesuai dengan opsi yang benar. " +
+        "Output HANYA JSON array yang valid. Pastikan semua string property ditutup dengan benar.",
       generationConfig: {
-        temperature: 0.8,
-        maxOutputTokens: 12000,
+        temperature: 0.5,
+        maxOutputTokens: 6000, // ✅ Turunkan untuk 10 soal
         responseMimeType: "application/json",
       },
     });
 
-    const questions = await retryOnQuotaExceeded(async () => {
-      return await rateLimitedRequest(async () => {
-        const response = await model.generateContent(prompt);
-        const text = response.response.text();
+    const questions = await retryOnQuotaExceeded(
+      async () => {
+        return await rateLimitedRequest(async () => {
+          const response = await model.generateContent(prompt);
+          const text = response.response.text();
 
-        // --- FIX PEMBERSIH JSON ---
-        let cleanText = text
-          .replace(/```json\n?/g, "")
-          .replace(/```\n?/g, "")
-          .trim();
+          console.log("📝 Raw response length:", text.length);
 
-        // Fix Smart Quotes
-        cleanText = cleanText.replace(
-          /[\u201C\u201D\u201E\u201F\u2033\u2036]/g,
-          '"',
-        );
-        cleanText = cleanText.replace(
-          /[\u2018\u2019\u201A\u201B\u2032\u2035]/g,
-          "'",
-        );
-        cleanText = cleanText.replace(/[\x00-\x1F\x7F-\x9F]/g, "");
-        cleanText = cleanText.replace(/(\r\n|\n|\r)/gm, " ");
-        cleanText = cleanText.replace(/,\s*([\]}])/g, "$1");
+          // ✅ Gunakan repair function
+          const cleaned = repairIncompleteJSON(text);
 
-        try {
-          return JSON.parse(cleanText);
-        } catch (e) {
-          console.error("❌ Gagal parse JSON:", e);
-          throw e;
-        }
-      });
-    });
+          console.log("🧹 Cleaned text length:", cleaned.length);
 
-    const formattedQuestions = questions.map((q: any) => ({
+          try {
+            const parsed = JSON.parse(cleaned);
+
+            // Validasi struktur
+            if (!Array.isArray(parsed)) {
+              throw new Error("Response is not an array");
+            }
+
+            if (parsed.length === 0) {
+              throw new Error("Response array is empty");
+            }
+
+            // Validasi setiap soal
+            const validQuestions = parsed.filter((q: any) => {
+              const isValid =
+                q.text &&
+                typeof q.text === "string" &&
+                Array.isArray(q.options) &&
+                q.options.length === 5 &&
+                typeof q.correctAnswer === "number" &&
+                q.correctAnswer >= 0 &&
+                q.correctAnswer <= 4 &&
+                q.explanation &&
+                typeof q.explanation === "string";
+
+              if (!isValid) {
+                console.warn("⚠️ Invalid question structure:", q);
+              }
+
+              return isValid;
+            });
+
+            if (validQuestions.length === 0) {
+              throw new Error("No valid questions in response");
+            }
+
+            console.log(
+              `✅ Validated ${validQuestions.length}/${parsed.length} questions`,
+            );
+
+            return validQuestions;
+          } catch (parseError: any) {
+            console.error("❌ Gagal parse JSON:", parseError.message);
+            console.error(
+              "📄 Cleaned text (first 500 chars):",
+              cleaned.substring(0, 500),
+            );
+            console.error(
+              "📄 Cleaned text (last 500 chars):",
+              cleaned.substring(cleaned.length - 500),
+            );
+            throw new Error(`JSON parse failed: ${parseError.message}`);
+          }
+        });
+      },
+      3,
+      2000,
+    );
+
+    // Format dengan ID unik
+    const formattedQuestions = questions.map((q: any, index: number) => ({
       ...q,
-      id: `dyn-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      id: `${hotsOnly ? "hots" : "dyn"}-${subtest.substring(0, 3)}-${Date.now()}-${index}`,
       subtest,
+      isHOTS: hotsOnly,
     }));
 
-    console.log(`✅ Generated ${formattedQuestions.length} questions`);
+    console.log(
+      `✅ Generated ${formattedQuestions.length} ${hotsOnly ? "HOTS " : ""}questions for ${subtest}`,
+    );
     return formattedQuestions;
   } catch (error: any) {
     console.error("❌ --- [generateDynamicQuestions] ERROR ---");
     console.error("❌ Error Message:", error.message);
+    console.error("❌ Subtest:", subtest);
+    console.error("❌ Count requested:", finalCount);
+
+    // Return array kosong instead of throw
     return [];
   }
 };

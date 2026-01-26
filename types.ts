@@ -1,3 +1,4 @@
+// types.ts
 
 export enum SubtestType {
   PenalaranUmum = 'Penalaran Umum',
@@ -41,6 +42,7 @@ export interface Lesson {
   };
 }
 
+// ✅ PERBAIKAN PENTING: Tambahkan solvedQuestionIds di sini
 export interface Progress {
   scores: Record<SubtestType, number[]>;
   completedLessons: string[];
@@ -49,6 +51,9 @@ export interface Progress {
     subtest: SubtestType;
     score: number;
   }[];
+  
+  // Ini wajib ada agar fitur "Soal Tidak Muncul Lagi" bekerja
+  solvedQuestionIds: string[]; 
 }
 
 export interface ChatMessage {

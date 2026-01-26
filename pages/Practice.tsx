@@ -33,6 +33,7 @@ import {
   XCircle,
   Trophy,
   MessageSquare,
+  History, // ✅ Import History icon untuk indikator
 } from "lucide-react";
 
 const formatTime = (seconds: number) => {
@@ -107,40 +108,84 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
     setShowConfirmModal(true);
   };
 
+  // ✅ LOGIKA BARU: Filter soal berdasarkan riwayat skor
   const startSession = (withTimer: boolean) => {
     if (!pendingSubtest) return;
 
     let allQ = dbService.loadQuestions();
-    const filtered = allQ.filter((q) => q.subtest === pendingSubtest);
+    // Filter soal berdasarkan subtest yang dipilih
+    let filtered = allQ.filter((q) => q.subtest === pendingSubtest);
 
     if (filtered.length === 0) {
       alert(
-        `Maaf, soal untuk ${pendingSubtest} belum tersedia. Silakan klik 'Ambil 210 Soal Master' di sidebar.`,
+        `Maaf, soal untuk ${pendingSubtest} belum tersedia. Silakan download soal di sidebar.`,
       );
       setShowConfirmModal(false);
       return;
     }
 
-    const shuffled = [...filtered].sort(() => 0.5 - Math.random()).slice(0, 20);
-    setQuestions(shuffled);
+    // ✅ LOGIKA FILTER ID SOAL
+    // Ambil daftar ID soal yang sudah diselesaikan user
+    const solvedIds = progress.solvedQuestionIds || [];
+
+    // Filter: Ambil soal yang ID-nya TIDAK ADA di daftar solvedIds
+    let newPool = filtered.filter((q) => !solvedIds.includes(q.id));
+
+    // Fallback: Jika soal baru kurang dari 20 (misal bank soal habis),
+    // kita ambil dari soal lama (yang sudah dikerjakan) agar user tetap bisa latihan.
+    if (newPool.length < 20) {
+      console.warn(
+        `⚠️ Soal baru hanya ${newPool.length}. Mengambil ulang soal lama.`,
+      );
+      const oldPool = filtered.filter((q) => solvedIds.includes(q.id));
+      // Acak soal lama agar tidak monoton
+      const shuffledOld = oldPool.sort(() => 0.5 - Math.random());
+      // Gabungkan (Soal baru di depan, lalu soal lama)
+      newPool = [...newPool, ...shuffledOld];
+    }
+
+    // Ambil 20 soal untuk sesi ini
+    const finalPool = newPool.sort(() => 0.5 - Math.random()).slice(0, 20);
+
+    console.log(
+      `✅ Sesi dimulai. ${newPool.length >= 20 ? "Semua soal baru." : "Termasuk soal ulang."}`,
+    );
+
+    setQuestions(finalPool);
     setSelectedSubtest(pendingSubtest);
     setUseTimer(withTimer);
-    setTimeLeft(shuffled.length * 60); // 1 menit per soal
+    setTimeLeft(finalPool.length * 60);
     setActiveQuestionIndex(0);
+
+    // Reset State
+    setAiAnalysis(null);
+    setSelectedAnswer(undefined);
+    setIsAnswered(false);
     setCorrectCount(0);
     setIsFinished(false);
-    setIsAnswered(false);
-    setSelectedAnswer(null);
-    setAiAnalysis(null);
     setShowConfirmModal(false);
     setExplanationMode("quick");
   };
 
   const handleAnswer = (idx: number) => {
     if (isAnswered) return;
+
+    const currentQuestion = questions[activeQuestionIndex];
+
+    // ✅ DEBUG: Log jawaban yang dipilih
+    console.log("✅ [Practice] Answer Selected");
+    console.log(`   Question: ${activeQuestionIndex} (${currentQuestion.id})`);
+    console.log(`   Answer Index: ${idx}`);
+    console.log(`   Answer Text: ${currentQuestion.options[idx]}`);
+    console.log(`   Correct Index: ${currentQuestion.correctAnswer}`);
+    console.log(
+      `   Correct Text: ${currentQuestion.options[currentQuestion.correctAnswer]}`,
+    );
+    console.log(`   Is Correct: ${idx === currentQuestion.correctAnswer}`);
+
     setSelectedAnswer(idx);
     setIsAnswered(true);
-    if (idx === questions[activeQuestionIndex].correctAnswer) {
+    if (idx === currentQuestion.correctAnswer) {
       setCorrectCount((prev) => prev + 1);
     }
     fetchAiAnalysis();
@@ -150,7 +195,37 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
     if (isAnalyzing) return;
     setIsAnalyzing(true);
     try {
-      const result = await getDeepAnalysis(questions[activeQuestionIndex]);
+      const currentQuestion = questions[activeQuestionIndex];
+
+      // ✅ DEBUG & VALIDASI: Cetak info soal yang sedang dianalisis
+      console.log("🎯 [Practice] Fetching AI Analysis");
+      console.log(`   Question Index: ${activeQuestionIndex}`);
+      console.log(`   Question ID: ${currentQuestion.id}`);
+      console.log(
+        `   Question Text: ${currentQuestion.text.substring(0, 80)}...`,
+      );
+      console.log(`   CorrectAnswer Index: ${currentQuestion.correctAnswer}`);
+      console.log(`   Selected Answer Index: ${selectedAnswer}`);
+      console.log(
+        `   CorrectAnswer Text: ${currentQuestion.options[currentQuestion.correctAnswer]}`,
+      );
+
+      // ✅ Validasi correctAnswer sebelum dikirim ke AI
+      if (
+        typeof currentQuestion.correctAnswer !== "number" ||
+        currentQuestion.correctAnswer < 0 ||
+        currentQuestion.correctAnswer >= currentQuestion.options.length
+      ) {
+        console.error("❌ CRITICAL ERROR: Invalid correctAnswer!");
+        console.error(
+          `   Index: ${currentQuestion.correctAnswer}, Options Length: ${currentQuestion.options.length}`,
+        );
+        throw new Error(
+          `Invalid correctAnswer index for question ${activeQuestionIndex}`,
+        );
+      }
+
+      const result = await getDeepAnalysis(currentQuestion);
       setAiAnalysis(result);
     } catch (e) {
       console.error("AI Analysis Error", e);
@@ -178,6 +253,24 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
   };
 
   const nextQuestion = () => {
+    // Simpan ID soal saat ini sebagai "sudah dikerjakan"
+    const currentId = questions[activeQuestionIndex].id;
+
+    setProgress((prevProgress) => {
+      const currentSolvedIds = prevProgress.solvedQuestionIds || [];
+
+      // Cek duplikasi agar array tidak membengkak
+      if (!currentSolvedIds.includes(currentId)) {
+        console.log(`💾 Menyimpan ID soal: ${currentId}`);
+        return {
+          ...prevProgress,
+          solvedQuestionIds: [...currentSolvedIds, currentId],
+        };
+      }
+      return prevProgress;
+    });
+
+    // Lanjut ke soal berikutnya
     if (activeQuestionIndex < questions.length - 1) {
       setActiveQuestionIndex((prev) => prev + 1);
       setSelectedAnswer(null);
@@ -192,6 +285,20 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
 
   const finishPractice = () => {
     if (isFinished) return;
+
+    // Simpan ID soal terakhir juga
+    const currentId = questions[activeQuestionIndex].id;
+    setProgress((prevProgress) => {
+      const currentSolvedIds = prevProgress.solvedQuestionIds || [];
+      if (!currentSolvedIds.includes(currentId)) {
+        return {
+          ...prevProgress,
+          solvedQuestionIds: [...currentSolvedIds, currentId],
+        };
+      }
+      return prevProgress;
+    });
+
     setIsFinished(true);
     const score = Math.round((correctCount / questions.length) * 1000);
     const newHistory = [
@@ -203,9 +310,12 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
       },
     ];
     const subtestScores = [...(progress.scores[selectedSubtest!] || []), score];
+
     setProgress({
       history: newHistory,
       scores: { ...progress.scores, [selectedSubtest!]: subtestScores },
+      // Pastikan solvedQuestionIds tetap terbawa (penting!)
+      solvedQuestionIds: progress.solvedQuestionIds || [],
     });
   };
 
@@ -296,6 +406,7 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
         bg: "bg-pink-50",
       },
     ];
+
     return (
       <div className="max-w-5xl mx-auto space-y-6 md:space-y-8 animate-in fade-in duration-700 pb-24 px-4">
         {showConfirmModal && (
@@ -341,35 +452,50 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
 
         <header className="text-center space-y-3">
           <div className="inline-flex items-center gap-2 px-3 py-1 bg-indigo-50 text-indigo-600 rounded-full text-[9px] font-black uppercase tracking-widest">
-            <Zap className="w-3 h-3" /> Professional Strategy AI
+            <Zap className="w-3 h-3" /> Smart Rotation Enabled
           </div>
           <h2 className="text-2xl md:text-4xl font-black text-slate-800 tracking-tight">
             Pilih Subtest
           </h2>
           <p className="text-slate-500 max-w-sm mx-auto text-xs font-medium">
-            Latihan simulasi standar SNPMB 2025.
+            Sistem akan otomatis menyediakan soal baru jika bank soal 20.
           </p>
         </header>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-6">
-          {subtests.map((st) => (
-            <button
-              key={st.type}
-              onClick={() => handleSubtestClick(st.type)}
-              className="group bg-white border border-slate-200 p-5 md:p-6 rounded-[1.5rem] text-left transition-all hover:border-indigo-400 hover:shadow-xl active:scale-95"
-            >
-              <div
-                className={`${st.bg} ${st.color} w-10 h-10 md:w-12 md:h-12 rounded-xl flex items-center justify-center mb-4 md:mb-5 group-hover:scale-110 transition-transform`}
+          {subtests.map((st) => {
+            // Hitung jumlah soal di database untuk tampilan UI (opsional)
+            const allQ = dbService.loadQuestions();
+            const count = allQ.filter((q) => q.subtest === st.type).length;
+            const historyCount = (progress.scores[st.type] || []).length;
+
+            return (
+              <button
+                key={st.type}
+                onClick={() => handleSubtestClick(st.type)}
+                className="group bg-white border border-slate-200 p-5 md:p-6 rounded-[1.5rem] text-left transition-all hover:border-indigo-400 hover:shadow-xl active:scale-95"
               >
-                {st.icon}
-              </div>
-              <h3 className="font-black text-slate-800 text-sm md:text-base mb-2">
-                {st.type}
-              </h3>
-              <div className="flex items-center justify-between text-[9px] font-black text-indigo-600 uppercase tracking-widest">
-                Mulai Latihan <ArrowRight size={14} />
-              </div>
-            </button>
-          ))}
+                <div
+                  className={`${st.bg} ${st.color} w-10 h-10 md:w-12 md:h-12 rounded-xl flex items-center justify-center mb-4 md:mb-5 group-hover:scale-110 transition-transform`}
+                >
+                  {st.icon}
+                </div>
+                <div className="flex justify-between items-start mb-2">
+                  <h3 className="font-black text-slate-800 text-sm md:text-base">
+                    {st.type}
+                  </h3>
+                  {historyCount > 0 && (
+                    <span className="bg-indigo-100 text-indigo-700 text-[9px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
+                      <History size={8} /> {historyCount}x
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center justify-between text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                  <span>{count} Soal Tersedia</span>
+                  <ArrowRight size={14} />
+                </div>
+              </button>
+            );
+          })}
         </div>
       </div>
     );
@@ -379,104 +505,111 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
   if (!activeQuestion) return null;
 
   // Analysis Component for reuse in Mobile and Desktop
-  const AnalysisContent = () => (
-    <div
-      className={`bg-white rounded-[2rem] border border-slate-200 shadow-xl overflow-hidden transition-all duration-500 h-full flex flex-col ${isAnswered ? "opacity-100 translate-y-0 scale-100" : "opacity-0 translate-y-10 scale-95 pointer-events-none"}`}
-    >
-      <div className="bg-indigo-600 p-5 text-white flex items-center justify-between">
-        <div className="flex items-center gap-2 font-black text-xs uppercase tracking-widest">
-          <Sparkles size={18} className="text-indigo-300" /> Analisis Master AI
-        </div>
-        <button
-          onClick={() => setShowDeepChat(true)}
-          className="text-[9px] bg-white/10 border border-white/20 px-3 py-1.5 rounded-lg hover:bg-white/20 font-black uppercase transition-colors tracking-widest"
-        >
-          Konsultasi
-        </button>
-      </div>
+  const AnalysisContent = () => {
+    // ✅ VALIDASI: Pastikan analisis adalah untuk soal yang benar
+    const isAnalysisValid =
+      activeQuestion?.id === (aiAnalysis as any)?._questionId;
 
-      <div className="p-5 flex-1 flex flex-col gap-4 overflow-hidden">
-        <div className="flex bg-slate-100 p-1 rounded-xl shrink-0">
-          {(["quick", "simple", "complex", "interactive"] as const).map(
-            (mode) => (
-              <button
-                key={mode}
-                onClick={() => setExplanationMode(mode)}
-                className={`shrink-0 flex-1 px-1 py-2 text-[8px] sm:text-[9px] font-black rounded-lg transition-all uppercase tracking-tight ${explanationMode === mode ? "bg-white shadow-md text-indigo-600" : "text-slate-400"}`}
-              >
-                {mode === "quick"
-                  ? "STRATEGI"
-                  : mode === "simple"
-                    ? "INTUITIF"
-                    : mode === "complex"
-                      ? "AKADEMIK"
-                      : "TANYA"}
-              </button>
-            ),
-          )}
+    return (
+      <div
+        className={`bg-white rounded-[2rem] border border-slate-200 shadow-xl overflow-hidden transition-all duration-500 h-full flex flex-col ${isAnswered ? "opacity-100 translate-y-0 scale-100" : "opacity-0 translate-y-10 scale-95 pointer-events-none"}`}
+      >
+        <div className="bg-indigo-600 p-5 text-white flex items-center justify-between">
+          <div className="flex items-center gap-2 font-black text-xs uppercase tracking-widest">
+            <Sparkles size={18} className="text-indigo-300" /> Analisis Master
+            AI
+          </div>
+          <button
+            onClick={() => setShowDeepChat(true)}
+            className="text-[9px] bg-white/10 border border-white/20 px-3 py-1.5 rounded-lg hover:bg-white/20 font-black uppercase transition-colors tracking-widest"
+          >
+            Konsultasi
+          </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto no-scrollbar">
-          {isAnalyzing ? (
-            <div className="flex flex-col items-center justify-center h-32 gap-3 text-slate-400">
-              <Loader2 className="animate-spin text-indigo-600" />
-              <p className="text-[9px] font-black uppercase tracking-widest italic text-center">
-                AI Master sedang merumuskan bedah soal...
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-4 animate-in fade-in zoom-in-95 duration-300">
-              <div className="flex items-center gap-2 text-indigo-600 font-black text-[10px] uppercase tracking-widest border-b border-indigo-100 pb-2">
-                {explanationMode === "quick" && (
-                  <>
-                    <Zap size={14} className="fill-indigo-600" /> Trik & Cara
-                    Cepat
-                  </>
-                )}
-                {explanationMode === "simple" && (
-                  <>
-                    <Lightbulb size={14} className="fill-indigo-600" />{" "}
-                    Penjelasan Intuitif
-                  </>
-                )}
-                {explanationMode === "complex" && (
-                  <>
-                    <Microscope size={14} className="fill-indigo-600" /> Logika
-                    Formal
-                  </>
-                )}
-                {explanationMode === "interactive" && (
-                  <>
-                    <Repeat size={14} className="fill-indigo-600" /> Mode
-                    Refleksi Kritis
-                  </>
-                )}
+        <div className="p-5 flex-1 flex flex-col gap-4 overflow-hidden">
+          <div className="flex bg-slate-100 p-1 rounded-xl shrink-0">
+            {(["quick", "simple", "complex", "interactive"] as const).map(
+              (mode) => (
+                <button
+                  key={mode}
+                  onClick={() => setExplanationMode(mode)}
+                  className={`shrink-0 flex-1 px-1 py-2 text-[8px] sm:text-[9px] font-black rounded-lg transition-all uppercase tracking-tight ${explanationMode === mode ? "bg-white shadow-md text-indigo-600" : "text-slate-400"}`}
+                >
+                  {mode === "quick"
+                    ? "STRATEGI"
+                    : mode === "simple"
+                      ? "INTUITIF"
+                      : mode === "complex"
+                        ? "AKADEMIK"
+                        : "TANYA"}
+                </button>
+              ),
+            )}
+          </div>
+
+          <div className="flex-1 overflow-y-auto no-scrollbar">
+            {isAnalyzing ? (
+              <div className="flex flex-col items-center justify-center h-32 gap-3 text-slate-400">
+                <Loader2 className="animate-spin text-indigo-600" />
+                <p className="text-[9px] font-black uppercase tracking-widest italic text-center">
+                  AI Master sedang merumuskan bedah soal...
+                </p>
               </div>
-              <div className="text-xs sm:text-sm text-slate-700 leading-relaxed font-bold bg-slate-50 p-4 rounded-xl border border-slate-100 min-h-[100px] whitespace-pre-wrap">
-                {aiAnalysis?.[explanationMode] || "Merumuskan strategi..."}
-              </div>
-              {activeQuestion.quickTrick && explanationMode === "quick" && (
-                <div className="bg-amber-50 border border-amber-200 p-3 rounded-xl text-[10px] sm:text-xs font-bold text-amber-900 italic">
-                  💡 Trik Master: {activeQuestion.quickTrick}
+            ) : (
+              <div className="space-y-4 animate-in fade-in zoom-in-95 duration-300">
+                <div className="flex items-center gap-2 text-indigo-600 font-black text-[10px] uppercase tracking-widest border-b border-indigo-100 pb-2">
+                  {explanationMode === "quick" && (
+                    <>
+                      <Zap size={14} className="fill-indigo-600" /> Trik & Cara
+                      Cepat
+                    </>
+                  )}
+                  {explanationMode === "simple" && (
+                    <>
+                      <Lightbulb size={14} className="fill-indigo-600" />{" "}
+                      Penjelasan Intuitif
+                    </>
+                  )}
+                  {explanationMode === "complex" && (
+                    <>
+                      <Microscope size={14} className="fill-indigo-600" />{" "}
+                      Logika Formal
+                    </>
+                  )}
+                  {explanationMode === "interactive" && (
+                    <>
+                      <Repeat size={14} className="fill-indigo-600" /> Mode
+                      Refleksi Kritis
+                    </>
+                  )}
                 </div>
-              )}
-            </div>
-          )}
-        </div>
+                <div className="text-xs sm:text-sm text-slate-700 leading-relaxed font-bold bg-slate-50 p-4 rounded-xl border border-slate-100 min-h-[100px] whitespace-pre-wrap">
+                  {aiAnalysis?.[explanationMode] || "Merumuskan strategi..."}
+                </div>
+                {activeQuestion.quickTrick && explanationMode === "quick" && (
+                  <div className="bg-amber-50 border border-amber-200 p-3 rounded-xl text-[10px] sm:text-xs font-bold text-amber-900 italic">
+                    💡 Trik Master: {activeQuestion.quickTrick}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
 
-        <button
-          onClick={nextQuestion}
-          className="w-full p-4 rounded-2xl font-black bg-indigo-600 text-white hover:bg-indigo-700 shadow-xl shadow-indigo-100 flex items-center justify-center gap-2 transition-all active:scale-95 group shrink-0"
-        >
-          LANJUT KE SOAL{" "}
-          <ChevronRight
-            size={18}
-            className="group-hover:translate-x-1 transition-transform"
-          />
-        </button>
+          <button
+            onClick={nextQuestion}
+            className="w-full p-4 rounded-2xl font-black bg-indigo-600 text-white hover:bg-indigo-700 shadow-xl shadow-indigo-100 flex items-center justify-center gap-2 transition-all active:scale-95 group shrink-0"
+          >
+            LANJUT KE SOAL{" "}
+            <ChevronRight
+              size={18}
+              className="group-hover:translate-x-1 transition-transform"
+            />
+          </button>
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="max-w-7xl mx-auto flex flex-col h-full gap-4 pb-28 md:pb-6 relative px-2 animate-in fade-in duration-500">
