@@ -27,7 +27,8 @@ const MASTER_PERSONA_INSTRUCTION = `
 Anda adalah AI Master Tutor SNBT Profesional dengan akurasi 100%.
 
 PERATURAN PENULISAN MATEMATIKA (WAJIB DIPATUHI):
-1. DILARANG KERAS MENGGUNAKAN TANDA DOLAR ($) untuk rumus. CONTOH SALAH: $X^2 = 49$.
+1. DILARANG KERAS MENGGUNAKAN TANDA DOLAR ($) DALAM SEGALA KONDISI.
+   CONTOH SALAH: $U_1$, $x^2$, $1.1$, $S_3$, $10\\%$.
 2. DILARANG MENGGUNAKAN BACKSLASH (\) untuk perintah LaTeX.
 3. WAJIB MENGGUNAKAN SIMBOL UNICODE STANDAR (Simbol yang bisa diketik di HP/Laptop biasa).
    - Pangkat: Gunakan tanda caret ^ atau superscript unicode (contoh: x^2 atau x²).
@@ -37,11 +38,35 @@ PERATURAN PENULISAN MATEMATIKA (WAJIB DIPATUHI):
    - Lebih Dari Sama Dengan: Gunakan ≥.
    - Kurang Dari Sama Dengan: Gunakan ≤.
    - Derajat: Gunakan °.
+   - Persen: 10% (bukan $10\\%$).
+   - Rumus: L = π × r² (bukan $L = \\pi r^2$).
+   - Pecahan: 1/2 (bukan $\\frac{1}{2}$).
+   - Variabel/Gandaan: U1, U2, U3 (bukan $U_1$).
+  - ARAH / URUTAN: Gunakan tanda strip (-) atau kata "ke" atau "sampai".
+     CONTOH BENAR: "Urutannya adalah A ke B ke C."
+     CONTOH BENAR: "A - B - C"
+     CONTOH SALAH: "A $\\rightarrow$ B" atau "A $\\to$ B"
 
 CONTOH PENULISAN YANG BENAR:
+- Urutannya adalah A ke B ke C.
+- Urutannya A - B - C
 - Jika X² = 49 dan Y = 7, maka hubungan antara |X| dan Y adalah ...
 - Rumus luas lingkaran adalah L = π × r².
 - Nilai dari √144 adalah 12.
+- Produksi Hari Senin (U1): 200 unit. Kenaikan harian (rasio): 10% atau 0.10. Perhitungan: 200 × 1.1 = 220.
+
+⚠️ CONTOH KESALAHAN FATAL (JANGAN IKUTI INI):
+SALAH: "Produksi (U_1) adalah 200 unit. Rumusnya $U_n = 200 \\times 1.1^{n-1}$."
+BENAR: "Produksi U1 adalah 200 unit. Rumusnya Un = 200 × 1.1^(n-1)."
+
+SALAH: "Nilai $\\pi \\times r^2$."
+BENAR: "Nilai π × r²."
+
+SALAH: "Urutannya T $\\rightarrow$ Q $\\rightarrow$ P."
+
+JAWABLAH SEMUA PERTANYAAN MENGGUNAKAN FORMAT YANG BENAR (BENAR), BUKAN YANG SALAH.
+JANGAN PERNAH MENGGUNAKAN TANDA DOLAR. JANGAN PERNAH MENGGUNAKAN FORMAT LATEX.
+Jelaskan dengan bahasa Indonesia yang jelas.
 
 ATURAN AKURASI SOAL:
 1. Setiap soal HARUS memiliki SATU dan HANYA SATU jawaban yang benar
@@ -49,7 +74,7 @@ ATURAN AKURASI SOAL:
 3. Pastikan logika soal koheren dan tidak ambigu
 4. Untuk soal matematika/kuantitatif, verifikasi perhitungan 2x sebelum output
 5. Jangan membuat soal yang memerlukan asumsi tidak tertulis
-
+6. Opsi pengecoh harus masuk akal namun jelas salah
 Jelaskan materi dengan bahasa Indonesia yang jelas, cepat, dan to-the-point.
 `;
 
@@ -171,6 +196,7 @@ function repairIncompleteJSON(text: string): string {
   return cleaned;
 }
 
+// ✅ PERBAIKAN LOGIKA UTAMA: getTutorResponse
 export const getTutorResponse = async (
   history: ChatMessage[],
   context?: string,
@@ -181,6 +207,8 @@ export const getTutorResponse = async (
   if (!genAI) throw new Error("AI Model not initialized");
 
   console.log("💬 --- [getTutorResponse] START ---");
+  console.log("📄 History Length:", history.length);
+  console.log("📄 Context Provided:", context ? "YES" : "NO");
 
   try {
     const model = genAI.getGenerativeModel({
@@ -190,19 +218,32 @@ export const getTutorResponse = async (
 
     return await retryOnQuotaExceeded(async () => {
       return await rateLimitedRequest(async () => {
+        // Ambil history kecuali pesan terakhir (karena itu akan kita kirim manual dengan context)
         let chatHistory = history.slice(0, -1).map((h) => ({
           role: h.role === "user" ? "user" : "model",
           parts: [{ text: h.text }],
         }));
 
+        // Bersihkan history yang dimulai dengan model (agar chat tidak bingung)
         while (chatHistory.length > 0 && chatHistory[0].role === "model") {
           chatHistory.shift();
         }
 
         const chat = model.startChat({ history: chatHistory });
+
+        // ✅ PERBAIKAN: Suntikkan Context ke dalam pesan user terakhir
         const lastMessage = history[history.length - 1].text;
 
-        const result = await chat.sendMessage(lastMessage);
+        const finalPrompt = context
+          ? `--- KONTEKS SOAL SAAT INI ---\n${context}\n\n--- PERTANYAAN USER ---\n${lastMessage}`
+          : lastMessage;
+
+        console.log(
+          "🚀 Sending Prompt:",
+          finalPrompt.substring(0, 150) + "...",
+        );
+
+        const result = await chat.sendMessage(finalPrompt);
         const response = await result.response;
         return response.text();
       });
@@ -437,7 +478,7 @@ KATEGORI SOAL: HOTS (Higher Order Thinking Skills) ONLY
   const prompt = `
 Generate EXACTLY ${finalCount} soal SNBT berkualitas tinggi untuk subtest: ${subtest}
 
-${hotsInstruction}
+ ${hotsInstruction}
 
 ATURAN VALIDASI KETAT:
 1. Setiap soal HARUS memiliki TEPAT SATU jawaban benar

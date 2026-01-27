@@ -24,11 +24,13 @@ import Practice from "./pages/Practice";
 import Analysis from "./pages/Analysis";
 import Tutor from "./pages/Tutor";
 import SettingsPage from "./pages/Settings";
+import LoadingScreen from "./pages/LoadingScreen";
 import { Progress, SubtestType } from "./types";
 import { dbService } from "./services/dbService";
 import { generateDynamicQuestions } from "./services/geminiService";
 
 const App: React.FC = () => {
+  const [isLoading, setIsLoading] = useState(true);
   const [progress, setProgress] = useState<Progress>(() =>
     dbService.loadProgress(),
   );
@@ -307,6 +309,11 @@ const App: React.FC = () => {
       </div>
     );
   };
+
+  // Show loading screen on first load
+  if (isLoading) {
+    return <LoadingScreen onComplete={() => setIsLoading(false)} />;
+  }
 
   return (
     <HashRouter>

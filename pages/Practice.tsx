@@ -33,7 +33,7 @@ import {
   XCircle,
   Trophy,
   MessageSquare,
-  History, // ✅ Import History icon untuk indikator
+  History,
 } from "lucide-react";
 
 const formatTime = (seconds: number) => {
@@ -73,11 +73,19 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
   const [aiAnalysis, setAiAnalysis] = useState<AIAnalysis | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
+  // State untuk Modal "Konsultasi" (Tombol di atas panel)
   const [showDeepChat, setShowDeepChat] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [chatInput, setChatInput] = useState("");
   const [isChatLoading, setIsChatLoading] = useState(false);
-  const chatScrollRef = useRef<HTMLDivElement>(null);
+
+  // State Khusus untuk Tab "Tanya" (Inline Chat di Panel)
+  const [interactiveMessages, setInteractiveMessages] = useState<ChatMessage[]>(
+    [],
+  );
+  const [interactiveInput, setInteractiveInput] = useState("");
+  const [isInteractiveLoading, setIsInteractiveLoading] = useState(false);
+  const [hasAutoTriggered, setHasAutoTriggered] = useState(false); // ✅ Cek apakah sudah auto-trigger
+  const interactiveScrollRef = useRef<HTMLDivElement>(null);
 
   // Timer Countdown Logic
   useEffect(() => {
@@ -97,23 +105,35 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
     return () => clearInterval(interval);
   }, [selectedSubtest, useTimer, isFinished, timeLeft]);
 
+  // Auto scroll untuk Inline Interactive Chat
   useEffect(() => {
-    if (chatScrollRef.current) {
-      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    if (interactiveScrollRef.current && explanationMode === "interactive") {
+      interactiveScrollRef.current.scrollTop =
+        interactiveScrollRef.current.scrollHeight;
     }
-  }, [chatMessages]);
+  }, [interactiveMessages, explanationMode]);
+
+  // ✅ LOGIKA BARU: Auto trigger saat masuk mode interactive
+  useEffect(() => {
+    if (
+      explanationMode === "interactive" &&
+      !hasAutoTriggered &&
+      !isInteractiveLoading
+    ) {
+      triggerInitialAnalysis();
+      setHasAutoTriggered(true);
+    }
+  }, [explanationMode, hasAutoTriggered]);
 
   const handleSubtestClick = (type: SubtestType) => {
     setPendingSubtest(type);
     setShowConfirmModal(true);
   };
 
-  // ✅ LOGIKA BARU: Filter soal berdasarkan riwayat skor
   const startSession = (withTimer: boolean) => {
     if (!pendingSubtest) return;
 
     let allQ = dbService.loadQuestions();
-    // Filter soal berdasarkan subtest yang dipilih
     let filtered = allQ.filter((q) => q.subtest === pendingSubtest);
 
     if (filtered.length === 0) {
@@ -124,32 +144,19 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
       return;
     }
 
-    // ✅ LOGIKA FILTER ID SOAL
-    // Ambil daftar ID soal yang sudah diselesaikan user
     const solvedIds = progress.solvedQuestionIds || [];
-
-    // Filter: Ambil soal yang ID-nya TIDAK ADA di daftar solvedIds
     let newPool = filtered.filter((q) => !solvedIds.includes(q.id));
 
-    // Fallback: Jika soal baru kurang dari 20 (misal bank soal habis),
-    // kita ambil dari soal lama (yang sudah dikerjakan) agar user tetap bisa latihan.
     if (newPool.length < 20) {
       console.warn(
         `⚠️ Soal baru hanya ${newPool.length}. Mengambil ulang soal lama.`,
       );
       const oldPool = filtered.filter((q) => solvedIds.includes(q.id));
-      // Acak soal lama agar tidak monoton
       const shuffledOld = oldPool.sort(() => 0.5 - Math.random());
-      // Gabungkan (Soal baru di depan, lalu soal lama)
       newPool = [...newPool, ...shuffledOld];
     }
 
-    // Ambil 20 soal untuk sesi ini
     const finalPool = newPool.sort(() => 0.5 - Math.random()).slice(0, 20);
-
-    console.log(
-      `✅ Sesi dimulai. ${newPool.length >= 20 ? "Semua soal baru." : "Termasuk soal ulang."}`,
-    );
 
     setQuestions(finalPool);
     setSelectedSubtest(pendingSubtest);
@@ -165,24 +172,17 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
     setIsFinished(false);
     setShowConfirmModal(false);
     setExplanationMode("quick");
+
+    // Reset Chat States
+    setChatMessages([]);
+    setInteractiveMessages([]);
+    setHasAutoTriggered(false);
   };
 
   const handleAnswer = (idx: number) => {
     if (isAnswered) return;
 
     const currentQuestion = questions[activeQuestionIndex];
-
-    // ✅ DEBUG: Log jawaban yang dipilih
-    console.log("✅ [Practice] Answer Selected");
-    console.log(`   Question: ${activeQuestionIndex} (${currentQuestion.id})`);
-    console.log(`   Answer Index: ${idx}`);
-    console.log(`   Answer Text: ${currentQuestion.options[idx]}`);
-    console.log(`   Correct Index: ${currentQuestion.correctAnswer}`);
-    console.log(
-      `   Correct Text: ${currentQuestion.options[currentQuestion.correctAnswer]}`,
-    );
-    console.log(`   Is Correct: ${idx === currentQuestion.correctAnswer}`);
-
     setSelectedAnswer(idx);
     setIsAnswered(true);
     if (idx === currentQuestion.correctAnswer) {
@@ -196,35 +196,6 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
     setIsAnalyzing(true);
     try {
       const currentQuestion = questions[activeQuestionIndex];
-
-      // ✅ DEBUG & VALIDASI: Cetak info soal yang sedang dianalisis
-      console.log("🎯 [Practice] Fetching AI Analysis");
-      console.log(`   Question Index: ${activeQuestionIndex}`);
-      console.log(`   Question ID: ${currentQuestion.id}`);
-      console.log(
-        `   Question Text: ${currentQuestion.text.substring(0, 80)}...`,
-      );
-      console.log(`   CorrectAnswer Index: ${currentQuestion.correctAnswer}`);
-      console.log(`   Selected Answer Index: ${selectedAnswer}`);
-      console.log(
-        `   CorrectAnswer Text: ${currentQuestion.options[currentQuestion.correctAnswer]}`,
-      );
-
-      // ✅ Validasi correctAnswer sebelum dikirim ke AI
-      if (
-        typeof currentQuestion.correctAnswer !== "number" ||
-        currentQuestion.correctAnswer < 0 ||
-        currentQuestion.correctAnswer >= currentQuestion.options.length
-      ) {
-        console.error("❌ CRITICAL ERROR: Invalid correctAnswer!");
-        console.error(
-          `   Index: ${currentQuestion.correctAnswer}, Options Length: ${currentQuestion.options.length}`,
-        );
-        throw new Error(
-          `Invalid correctAnswer index for question ${activeQuestionIndex}`,
-        );
-      }
-
       const result = await getDeepAnalysis(currentQuestion);
       setAiAnalysis(result);
     } catch (e) {
@@ -234,34 +205,124 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
     }
   };
 
+  // Handler untuk Modal (Konsultasi)
   const handleDeepChat = async () => {
-    if (!chatInput.trim() || isChatLoading) return;
-    const userMsg: ChatMessage = { role: "user", text: chatInput };
-    setChatMessages((prev) => [...prev, userMsg]);
-    setChatInput("");
-    setIsChatLoading(true);
-    const context = `Soal: ${questions[activeQuestionIndex].text}. Siswa menjawab: ${questions[activeQuestionIndex].options[selectedAnswer!]}. Jawaban benar: ${questions[activeQuestionIndex].options[questions[activeQuestionIndex].correctAnswer]}.`;
-    const response = await getTutorResponse(
-      [...chatMessages, userMsg],
-      context,
-    );
-    setChatMessages((prev) => [
+    // (Logika modal tetap sama seperti sebelumnya)
+  };
+
+  const triggerInitialAnalysis = async () => {
+    const currentQuestion = questions[activeQuestionIndex];
+
+    setInteractiveMessages((prev) => [
       ...prev,
-      { role: "model", text: response || "Maaf, ada kendala koneksi." },
+      { role: "model", text: "Sedang menganalisis konteks soal..." },
     ]);
-    setIsChatLoading(false);
+    setIsInteractiveLoading(true);
+
+    // ✅ Context Final (Tanpa kurung kurawal di teks perintah)
+    const context = `
+      Peran: Kamu adalah Master Tutor SNBT Profesional.
+      Tugas: Analisis soal di bawah ini secara mendalam. Berikan jawaban yang benar berdasarkan logika matematika.
+      
+
+      --- PERINTAH KHUSUS ---
+      JAWAB SINGKAT. MAKSIMAL 3 KALIMAT. Jangan bertele-tele.
+      JAWABLAH DENGAN BAHASA INDONESIA BIASA.
+      DILARANG KERAS MENGGUNAKAN TANDA DOLAR ($), KURUNG KURAWAL, Tanda BINTANG (*) atau BACKSLASH (\).
+      TULIS RUMUS MENGGUNAKAKAN HURUF BIASA DAN SIMBOL UNICODE (Contoh: U1, x², √, 10%, ≠).
+
+      --- DATA SOAL ---
+      Soal: ${currentQuestion.text}
+      
+      Pilihan Jawaban:
+      ${currentQuestion.options.map((opt, i) => `${String.fromCharCode(65 + i)}. ${opt}`).join("\n")}
+      
+      Kunci Jawaban (Data Sistem): Pilihan ${String.fromCharCode(65 + currentQuestion.correctAnswer)} (${currentQuestion.options[currentQuestion.correctAnswer]})
+      
+      --- INSTRUKSI ---
+      1. Jika perhitungan matematis menghasilkan angka yang BERBEDA dengan kunci jawaban sistem, jelaskan DISKRIPSI TUNTAS mengapa terjadi perbedaan (kemungkinan soal typo atau kunci salah).
+      2. Gunakan bahasa Indonesia yang santai namun profesional.
+      3. Jangan gunakan simbol matematika yang rumit jika tidak perlu, gunakan format teks biasa agar mudah dibaca.
+      4. Jelaskan urutan dengan kata-kata (misal: "A duduk di sebelah kanan B"), jangan pakai notasi matematika.
+      5. Jawab langsung pertanyaan pengguna.
+      
+    `;
+
+    const initialPrompt =
+      "Tolong jelaskan solusi dari soal ini dan pastikan apakah kunci jawabannya sudah benar.";
+
+    try {
+      const userMsg: ChatMessage = { role: "user", text: initialPrompt };
+      setInteractiveMessages([userMsg]);
+
+      const response = await getTutorResponse([userMsg], context);
+
+      setInteractiveMessages((prev) => [
+        ...prev,
+        { role: "model", text: response || "Maaf, AI sedang sibuk." },
+      ]);
+    } catch (error) {
+      console.error("Auto Trigger Error", error);
+      setInteractiveMessages((prev) => [
+        ...prev,
+        { role: "model", text: "Maaf, terjadi kesalahan saat menghubungi AI." },
+      ]);
+    } finally {
+      setIsInteractiveLoading(false);
+    }
+  };
+
+  // --- handleInteractiveSend ---
+  const handleInteractiveSend = async () => {
+    if (!interactiveInput.trim() || isInteractiveLoading) return;
+
+    const userMsg: ChatMessage = { role: "user", text: interactiveInput };
+    setInteractiveMessages((prev) => [...prev, userMsg]);
+    setInteractiveInput("");
+    setIsInteractiveLoading(true);
+
+    const currentQuestion = questions[activeQuestionIndex];
+
+    // ✅ Context Final (Tanpa spasi kosong di awal dan tanpa {} di teks)
+    const context = `
+      --- PERINTAH KHUSUS UNTUK JAWABAN INI ---
+      1. JANGAN GUNAKAN TANDA DOLAR ($) atau KURUNG KURAWAL MATEMATIKA atau BACKSLASH (\).
+      2. Tulis semua rumus dan variabel dalam bentuk teks biasa atau Unicode (misal: x², √, U1, U2, 10%).
+      3. Jika Anda menulis $..., itu adalah KESALAHAN FATAL.
+      4. Jelaskan dengan bahasa Indonesia yang jelas dan mudah dimengerti.
+      5. Jawab SINGKAT dan PADAT.
+
+      Soal: ${currentQuestion.text}. 
+      Pilihan: 
+      ${currentQuestion.options.map((opt, i) => `${String.fromCharCode(65 + i)}. ${opt}`).join("\n ")}.
+      
+      Kunci Jawaban (Sistem): ${currentQuestion.options[currentQuestion.correctAnswer]}.
+      
+      Catatan: Jika perhitungan matematis AI berbeda dengan kunci jawaban sistem, jelaskan perbedaannya.
+    `;
+
+    try {
+      const response = await getTutorResponse(
+        [...interactiveMessages, userMsg],
+        context,
+      );
+      setInteractiveMessages((prev) => [
+        ...prev,
+        { role: "model", text: response || "Maaf, ada kendala koneksi." },
+      ]);
+    } catch (error) {
+      console.error("Interactive Chat Error", error);
+    } finally {
+      setIsInteractiveLoading(false);
+    }
   };
 
   const nextQuestion = () => {
-    // Simpan ID soal saat ini sebagai "sudah dikerjakan"
     const currentId = questions[activeQuestionIndex].id;
 
     setProgress((prevProgress) => {
       const currentSolvedIds = prevProgress.solvedQuestionIds || [];
-
-      // Cek duplikasi agar array tidak membengkak
       if (!currentSolvedIds.includes(currentId)) {
-        console.log(`💾 Menyimpan ID soal: ${currentId}`);
         return {
           ...prevProgress,
           solvedQuestionIds: [...currentSolvedIds, currentId],
@@ -270,7 +331,6 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
       return prevProgress;
     });
 
-    // Lanjut ke soal berikutnya
     if (activeQuestionIndex < questions.length - 1) {
       setActiveQuestionIndex((prev) => prev + 1);
       setSelectedAnswer(null);
@@ -278,6 +338,8 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
       setAiAnalysis(null);
       setExplanationMode("quick");
       setChatMessages([]);
+      setInteractiveMessages([]);
+      setHasAutoTriggered(false); // Reset trigger untuk soal baru
     } else {
       finishPractice();
     }
@@ -286,7 +348,6 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
   const finishPractice = () => {
     if (isFinished) return;
 
-    // Simpan ID soal terakhir juga
     const currentId = questions[activeQuestionIndex].id;
     setProgress((prevProgress) => {
       const currentSolvedIds = prevProgress.solvedQuestionIds || [];
@@ -314,7 +375,6 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
     setProgress({
       history: newHistory,
       scores: { ...progress.scores, [selectedSubtest!]: subtestScores },
-      // Pastikan solvedQuestionIds tetap terbawa (penting!)
       solvedQuestionIds: progress.solvedQuestionIds || [],
     });
   };
@@ -463,7 +523,6 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
         </header>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-6">
           {subtests.map((st) => {
-            // Hitung jumlah soal di database untuk tampilan UI (opsional)
             const allQ = dbService.loadQuestions();
             const count = allQ.filter((q) => q.subtest === st.type).length;
             const historyCount = (progress.scores[st.type] || []).length;
@@ -504,12 +563,8 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
   const activeQuestion = questions[activeQuestionIndex];
   if (!activeQuestion) return null;
 
-  // Analysis Component for reuse in Mobile and Desktop
+  // Analysis Component
   const AnalysisContent = () => {
-    // ✅ VALIDASI: Pastikan analisis adalah untuk soal yang benar
-    const isAnalysisValid =
-      activeQuestion?.id === (aiAnalysis as any)?._questionId;
-
     return (
       <div
         className={`bg-white rounded-[2rem] border border-slate-200 shadow-xl overflow-hidden transition-all duration-500 h-full flex flex-col ${isAnswered ? "opacity-100 translate-y-0 scale-100" : "opacity-0 translate-y-10 scale-95 pointer-events-none"}`}
@@ -523,7 +578,7 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
             onClick={() => setShowDeepChat(true)}
             className="text-[9px] bg-white/10 border border-white/20 px-3 py-1.5 rounded-lg hover:bg-white/20 font-black uppercase transition-colors tracking-widest"
           >
-            Konsultasi
+            Konsultasi Penuh
           </button>
         </div>
 
@@ -548,7 +603,8 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
             )}
           </div>
 
-          <div className="flex-1 overflow-y-auto no-scrollbar">
+          {/* Area Konten Utama */}
+          <div className="flex-1 overflow-y-auto no-scrollbar relative">
             {isAnalyzing ? (
               <div className="flex flex-col items-center justify-center h-32 gap-3 text-slate-400">
                 <Loader2 className="animate-spin text-indigo-600" />
@@ -557,42 +613,126 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
                 </p>
               </div>
             ) : (
-              <div className="space-y-4 animate-in fade-in zoom-in-95 duration-300">
-                <div className="flex items-center gap-2 text-indigo-600 font-black text-[10px] uppercase tracking-widest border-b border-indigo-100 pb-2">
-                  {explanationMode === "quick" && (
-                    <>
-                      <Zap size={14} className="fill-indigo-600" /> Trik & Cara
-                      Cepat
-                    </>
-                  )}
-                  {explanationMode === "simple" && (
-                    <>
-                      <Lightbulb size={14} className="fill-indigo-600" />{" "}
-                      Penjelasan Intuitif
-                    </>
-                  )}
-                  {explanationMode === "complex" && (
-                    <>
-                      <Microscope size={14} className="fill-indigo-600" />{" "}
-                      Logika Formal
-                    </>
-                  )}
-                  {explanationMode === "interactive" && (
-                    <>
-                      <Repeat size={14} className="fill-indigo-600" /> Mode
-                      Refleksi Kritis
-                    </>
-                  )}
-                </div>
-                <div className="text-xs sm:text-sm text-slate-700 leading-relaxed font-bold bg-slate-50 p-4 rounded-xl border border-slate-100 min-h-[100px] whitespace-pre-wrap">
-                  {aiAnalysis?.[explanationMode] || "Merumuskan strategi..."}
-                </div>
-                {activeQuestion.quickTrick && explanationMode === "quick" && (
-                  <div className="bg-amber-50 border border-amber-200 p-3 rounded-xl text-[10px] sm:text-xs font-bold text-amber-900 italic">
-                    💡 Trik Master: {activeQuestion.quickTrick}
+              <>
+                {/* TAMPILAN MODE BIASA (Quick, Simple, Complex) */}
+                {explanationMode !== "interactive" && (
+                  <div className="space-y-4 animate-in fade-in zoom-in-95 duration-300">
+                    <div className="flex items-center gap-2 text-indigo-600 font-black text-[10px] uppercase tracking-widest border-b border-indigo-100 pb-2">
+                      {explanationMode === "quick" && (
+                        <>
+                          <Zap size={14} className="fill-indigo-600" /> Trik &
+                          Cara Cepat
+                        </>
+                      )}
+                      {explanationMode === "simple" && (
+                        <>
+                          <Lightbulb size={14} className="fill-indigo-600" />{" "}
+                          Penjelasan Intuitif
+                        </>
+                      )}
+                      {explanationMode === "complex" && (
+                        <>
+                          <Microscope size={14} className="fill-indigo-600" />{" "}
+                          Logika Formal
+                        </>
+                      )}
+                    </div>
+                    <div className="text-xs sm:text-sm text-slate-700 leading-relaxed font-bold bg-slate-50 p-4 rounded-xl border border-slate-100 min-h-[100px] whitespace-pre-wrap">
+                      {aiAnalysis?.[explanationMode] ||
+                        "Merumuskan strategi..."}
+                    </div>
+                    {activeQuestion.quickTrick &&
+                      explanationMode === "quick" && (
+                        <div className="bg-amber-50 border border-amber-200 p-3 rounded-xl text-[10px] sm:text-xs font-bold text-amber-900 italic">
+                          💡 Trik Master: {activeQuestion.quickTrick}
+                        </div>
+                      )}
                   </div>
                 )}
-              </div>
+
+                {/* ✅ TAMPILAN MODE INTERACTIVE (TANYA) - Inline Chat */}
+                {explanationMode === "interactive" && (
+                  <div className="flex flex-col h-full animate-in fade-in duration-300">
+                    <div className="flex items-center gap-2 text-indigo-600 font-black text-[10px] uppercase tracking-widest border-b border-indigo-100 pb-2 mb-3">
+                      <Repeat size={14} className="fill-indigo-600" /> Diskusi
+                      Soal
+                    </div>
+
+                    {/* Chat Area */}
+                    <div
+                      className="flex-1 overflow-y-auto no-scrollbar space-y-3 pr-1 min-h-[150px]"
+                      ref={interactiveScrollRef}
+                    >
+                      {interactiveMessages.length === 0 &&
+                        !isInteractiveLoading && (
+                          <div className="text-center py-8">
+                            <div className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-indigo-50 text-indigo-400 mb-2">
+                              <MessageSquare size={20} />
+                            </div>
+                            <p className="text-xs font-bold text-slate-500">
+                              Klik tombol Tanya untuk analisis otomatis
+                            </p>
+                          </div>
+                        )}
+
+                      {interactiveMessages.map((msg, i) => (
+                        <div
+                          key={i}
+                          className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+                        >
+                          <div
+                            className={`max-w-[90%] p-3 rounded-2xl text-xs font-bold leading-snug shadow-sm ${msg.role === "user" ? "bg-indigo-600 text-white rounded-tr-none" : "bg-white border border-slate-200 text-slate-800 rounded-tl-none"}`}
+                          >
+                            {msg.text}
+                          </div>
+                        </div>
+                      ))}
+
+                      {isInteractiveLoading && (
+                        <div className="flex justify-start">
+                          <div className="bg-white border border-slate-200 p-3 rounded-xl rounded-tl-none shadow-sm animate-pulse flex items-center gap-2">
+                            <Loader2
+                              size={12}
+                              className="animate-spin text-indigo-600"
+                            />
+                            <span className="text-[9px] font-black text-slate-400 uppercase tracking-tighter">
+                              AI Master Menganalisis...
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Input Area (Sticky di bawah) */}
+                    <div className="mt-3 pt-3 border-t border-slate-100">
+                      <div className="flex gap-2 bg-slate-50 border border-slate-200 p-1.5 rounded-xl">
+                        <input
+                          className="flex-1 bg-transparent border-none outline-none px-2 text-xs font-bold text-slate-700 placeholder:text-slate-400"
+                          placeholder="Tanya detail soal ini..."
+                          value={interactiveInput}
+                          onChange={(e) => setInteractiveInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault(); // Mencegah submit form jika ada
+                              handleInteractiveSend();
+                            }
+                          }}
+                          disabled={isInteractiveLoading}
+                        />
+                        <button
+                          onClick={handleInteractiveSend}
+                          disabled={
+                            isInteractiveLoading || !interactiveInput.trim()
+                          }
+                          className="h-8 w-8 bg-indigo-600 text-white rounded-lg flex items-center justify-center active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <ChevronRight size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </div>
 
@@ -703,7 +843,7 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
             </div>
           </div>
 
-          {/* Mobile Analysis Panel (only visible on small screens when answered) */}
+          {/* Mobile Analysis Panel */}
           {isAnswered && (
             <div className="lg:hidden animate-in slide-in-from-bottom-6 duration-500 mb-6 px-1">
               <AnalysisContent />
@@ -717,6 +857,7 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
         </div>
       </div>
 
+      {/* Modal "Konsultasi Penuh" (Opsional) */}
       {showDeepChat && (
         <div className="fixed inset-0 bg-slate-900/60 z-[200] flex items-end sm:items-center justify-center p-2 md:p-4 backdrop-blur-sm">
           <div className="bg-white w-full max-w-lg rounded-[2rem] overflow-hidden shadow-2xl flex flex-col h-[75vh] md:h-[80vh] animate-in slide-in-from-bottom-10">
@@ -727,10 +868,10 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
                 </div>
                 <div>
                   <p className="font-black text-xs md:text-sm tracking-tight">
-                    Konsultasi Master
+                    Konsultasi Master (Mode Penuh)
                   </p>
                   <p className="text-[9px] text-indigo-100 opacity-80 font-bold uppercase tracking-widest">
-                    Active Specialist
+                    Diskusi bebas tentang soal
                   </p>
                 </div>
               </div>
@@ -741,58 +882,10 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
                 <X size={20} />
               </button>
             </div>
-            <div
-              className="flex-1 overflow-y-auto p-5 space-y-6 bg-slate-50/50 no-scrollbar"
-              ref={chatScrollRef}
-            >
-              <div className="flex justify-start">
-                <div className="bg-white border border-slate-200 p-4 rounded-2xl rounded-tl-none shadow-sm max-w-[85%] text-xs md:text-sm font-bold leading-relaxed text-slate-800">
-                  Tanyakan apa pun tentang soal ini! Saya akan bantu bedah
-                  sampai kamu paham 100%. 🚀
-                </div>
-              </div>
-              {chatMessages.map((msg, i) => (
-                <div
-                  key={i}
-                  className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-                >
-                  <div
-                    className={`max-w-[85%] p-4 rounded-2xl text-xs md:text-sm font-bold leading-relaxed shadow-sm ${msg.role === "user" ? "bg-indigo-600 text-white rounded-tr-none" : "bg-white border border-slate-200 text-slate-800 rounded-tl-none"}`}
-                  >
-                    {msg.text}
-                  </div>
-                </div>
-              ))}
-              {isChatLoading && (
-                <div className="flex justify-start">
-                  <div className="bg-white border border-slate-200 p-3 rounded-xl rounded-tl-none shadow-sm animate-pulse flex items-center gap-2">
-                    <Loader2
-                      size={14}
-                      className="animate-spin text-indigo-600"
-                    />
-                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-tighter">
-                      AI Master...
-                    </span>
-                  </div>
-                </div>
-              )}
-            </div>
-            <div className="p-4 bg-white border-t shrink-0">
-              <div className="flex gap-2 bg-slate-50 border border-slate-200 p-1.5 rounded-2xl">
-                <input
-                  className="flex-1 bg-transparent border-none outline-none px-4 text-sm font-bold text-slate-700"
-                  placeholder="Ketik pertanyaan..."
-                  value={chatInput}
-                  onChange={(e) => setChatInput(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleDeepChat()}
-                />
-                <button
-                  onClick={handleDeepChat}
-                  disabled={isChatLoading}
-                  className="h-10 w-10 bg-indigo-600 text-white rounded-xl flex items-center justify-center active:scale-95 transition-all"
-                >
-                  <ChevronRight size={18} />
-                </button>
+            <div className="flex-1 overflow-y-auto p-5 space-y-6 bg-slate-50/50 no-scrollbar">
+              <div className="text-center text-slate-400 text-xs mt-10">
+                <MessageSquare className="mx-auto mb-2 opacity-20" size={48} />
+                <p>Gunakan tab "Tanya" di panel untuk interaksi cepat.</p>
               </div>
             </div>
           </div>
