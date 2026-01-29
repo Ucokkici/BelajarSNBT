@@ -23,59 +23,49 @@ if (API_KEY) {
 const analysisCache = new Map<string, AIAnalysis>();
 const topicCache = new Map<string, AIAnalysis>();
 
+// ✅ LOGIKA 2: Enhanced Master Persona dengan Validasi Ketat
 const MASTER_PERSONA_INSTRUCTION = `
 Anda adalah AI Master Tutor SNBT Profesional dengan akurasi 100%.
 
+CRITICAL VALIDATION RULES (WAJIB DIPATUHI):
+1. Setiap soal HARUS memiliki TEPAT SATU jawaban yang benar
+2. Verifikasi perhitungan matematis MINIMAL 3 KALI sebelum output
+3. Untuk soal matematika/kuantitatif: tunjukkan SEMUA langkah perhitungan
+4. Pastikan tidak ada ambiguitas dalam pertanyaan
+5. Opsi pengecoh harus masuk akal tapi jelas salah
+6. VALIDASI ULANG index correctAnswer sesuai dengan opsi yang benar
+
 PERATURAN PENULISAN MATEMATIKA (WAJIB DIPATUHI):
 1. DILARANG KERAS MENGGUNAKAN TANDA DOLAR ($) DALAM SEGALA KONDISI.
-   CONTOH SALAH: $U_1$, $x^2$, $1.1$, $S_3$, $10\\%$.
 2. DILARANG MENGGUNAKAN BACKSLASH (\) untuk perintah LaTeX.
-3. WAJIB MENGGUNAKAN SIMBOL UNICODE STANDAR (Simbol yang bisa diketik di HP/Laptop biasa).
-   - Pangkat: Gunakan tanda caret ^ atau superscript unicode (contoh: x^2 atau x²).
-   - Akar Kuadrat: Gunakan simbol √ (contoh: √49 = 7).
-   - Pi: Gunakan simbol π.
-   - Tidak Sama Dengan: Gunakan ≠.
-   - Lebih Dari Sama Dengan: Gunakan ≥.
-   - Kurang Dari Sama Dengan: Gunakan ≤.
-   - Derajat: Gunakan °.
-   - Persen: 10% (bukan $10\\%$).
-   - Rumus: L = π × r² (bukan $L = \\pi r^2$).
-   - Pecahan: 1/2 (bukan $\\frac{1}{2}$).
-   - Variabel/Gandaan: U1, U2, U3 (bukan $U_1$).
-  - ARAH / URUTAN: Gunakan tanda strip (-) atau kata "ke" atau "sampai".
-     CONTOH BENAR: "Urutannya adalah A ke B ke C."
-     CONTOH BENAR: "A - B - C"
-     CONTOH SALAH: "A $\\rightarrow$ B" atau "A $\\to$ B"
+3. WAJIB MENGGUNAKAN SIMBOL UNICODE STANDAR:
+   - Pangkat: x² atau x^2
+   - Akar: √49 = 7
+   - Pi: π
+   - Tidak sama: ≠
+   - Lebih dari sama dengan: ≥
+   - Kurang dari sama dengan: ≤
+   - Derajat: °
+   - Persen: 10%
+   - Pecahan: 1/2 atau ½
+   - Variabel: U1, U2, U3
 
-CONTOH PENULISAN YANG BENAR:
-- Urutannya adalah A ke B ke C.
-- Urutannya A - B - C
-- Jika X² = 49 dan Y = 7, maka hubungan antara |X| dan Y adalah ...
-- Rumus luas lingkaran adalah L = π × r².
-- Nilai dari √144 adalah 12.
-- Produksi Hari Senin (U1): 200 unit. Kenaikan harian (rasio): 10% atau 0.10. Perhitungan: 200 × 1.1 = 220.
+CONTOH PENULISAN BENAR:
+- Jika x² = 49 dan y = 7, maka hubungan antara |x| dan y adalah...
+- Rumus luas lingkaran: L = π × r²
+- Nilai √144 = 12
+- Produksi U1 = 200 unit, kenaikan 10%, maka U2 = 200 × 1.1 = 220
 
-⚠️ CONTOH KESALAHAN FATAL (JANGAN IKUTI INI):
-SALAH: "Produksi (U_1) adalah 200 unit. Rumusnya $U_n = 200 \\times 1.1^{n-1}$."
-BENAR: "Produksi U1 adalah 200 unit. Rumusnya Un = 200 × 1.1^(n-1)."
+STANDAR SOAL UTBK/SNBT:
+- Penalaran Umum: logika, silogisme, pola, analisis argumen
+- Pengetahuan Kuantitatif: aritmatika, aljabar, geometri dasar
+- Literasi Indonesia: pemahaman bacaan, analisis teks, tata bahasa
+- Literasi Inggris: reading comprehension, grammar, vocabulary
+- Penalaran Matematika: problem solving, aplikasi matematika
+- PPU: pengetahuan umum, sains sosial, current affairs
+- PBM: analisis wacana, argumentasi, struktur teks
 
-SALAH: "Nilai $\\pi \\times r^2$."
-BENAR: "Nilai π × r²."
-
-SALAH: "Urutannya T $\\rightarrow$ Q $\\rightarrow$ P."
-
-JAWABLAH SEMUA PERTANYAAN MENGGUNAKAN FORMAT YANG BENAR (BENAR), BUKAN YANG SALAH.
-JANGAN PERNAH MENGGUNAKAN TANDA DOLAR. JANGAN PERNAH MENGGUNAKAN FORMAT LATEX.
-Jelaskan dengan bahasa Indonesia yang jelas.
-
-ATURAN AKURASI SOAL:
-1. Setiap soal HARUS memiliki SATU dan HANYA SATU jawaban yang benar
-2. Verifikasi ulang setiap opsi jawaban sebelum menentukan correctAnswer
-3. Pastikan logika soal koheren dan tidak ambigu
-4. Untuk soal matematika/kuantitatif, verifikasi perhitungan 2x sebelum output
-5. Jangan membuat soal yang memerlukan asumsi tidak tertulis
-6. Opsi pengecoh harus masuk akal namun jelas salah
-Jelaskan materi dengan bahasa Indonesia yang jelas, cepat, dan to-the-point.
+Jelaskan dengan bahasa Indonesia yang jelas, cepat, dan to-the-point.
 `;
 
 const DEFAULT_MODEL = "models/gemini-flash-lite-latest";
@@ -114,33 +104,21 @@ async function retryOnQuotaExceeded<T>(
   throw new Error("Max retries exceeded");
 }
 
-// ✅ PERBAIKAN UTAMA: Function untuk repair incomplete JSON
 function repairIncompleteJSON(text: string): string {
   let cleaned = text.trim();
 
-  // Hapus markdown
   cleaned = cleaned.replace(/```json\n?/gi, "");
   cleaned = cleaned.replace(/```\n?/g, "");
-
-  // Hapus control characters
   cleaned = cleaned.replace(/[\x00-\x1F\x7F-\x9F]/g, "");
-
-  // Fix quotes
   cleaned = cleaned.replace(/[\u201C\u201D\u201E\u201F\u2033\u2036]/g, '"');
   cleaned = cleaned.replace(/[\u2018\u2019\u201A\u201B\u2032\u2035]/g, "'");
-
-  // Normalize whitespace
   cleaned = cleaned.replace(/(\r\n|\n|\r)/gm, " ");
   cleaned = cleaned.replace(/\s+/g, " ");
-
-  // Fix trailing commas
   cleaned = cleaned.replace(/,\s*([\]}])/g, "$1");
 
-  // ✅ PERBAIKAN: Jika JSON array tidak lengkap, potong di object terakhir yang valid
   if (cleaned.startsWith("[") && !cleaned.endsWith("]")) {
     console.warn("⚠️ Incomplete JSON array detected, attempting repair...");
 
-    // Cari posisi terakhir dari "}" yang valid
     let lastValidBrace = -1;
     let braceCount = 0;
     let inString = false;
@@ -177,15 +155,9 @@ function repairIncompleteJSON(text: string): string {
     }
 
     if (lastValidBrace > 0) {
-      // Potong sampai object terakhir yang lengkap
       cleaned = cleaned.substring(0, lastValidBrace + 1);
-
-      // Hapus trailing comma jika ada
       cleaned = cleaned.replace(/,\s*$/, "");
-
-      // Tutup array
       cleaned = cleaned + "]";
-
       console.log("✅ JSON repaired successfully");
     } else {
       console.error("❌ Cannot find valid JSON object to repair");
@@ -196,7 +168,90 @@ function repairIncompleteJSON(text: string): string {
   return cleaned;
 }
 
-// ✅ PERBAIKAN LOGIKA UTAMA: getTutorResponse
+// ✅ LOGIKA 2: Fungsi Validasi Jawaban yang Ketat
+function validateQuestionAccuracy(question: any): {
+  isValid: boolean;
+  errors: string[];
+} {
+  const errors: string[] = [];
+
+  // Validasi struktur dasar
+  if (!question.text || typeof question.text !== "string") {
+    errors.push("Text soal tidak valid");
+  }
+
+  if (!Array.isArray(question.options) || question.options.length !== 5) {
+    errors.push("Harus ada tepat 5 opsi jawaban");
+  }
+
+  if (
+    typeof question.correctAnswer !== "number" ||
+    question.correctAnswer < 0 ||
+    question.correctAnswer > 4
+  ) {
+    errors.push("Index correctAnswer tidak valid (harus 0-4)");
+  }
+
+  if (!question.explanation || typeof question.explanation !== "string") {
+    errors.push("Explanation tidak valid");
+  }
+
+  // Validasi konten
+  if (question.text && question.text.length < 20) {
+    errors.push("Soal terlalu pendek (min 20 karakter)");
+  }
+
+  // Validasi opsi jawaban tidak boleh sama
+  if (question.options) {
+    const uniqueOptions = new Set(question.options.map((opt: string) => opt.trim().toLowerCase()));
+    if (uniqueOptions.size !== 5) {
+      errors.push("Ada opsi jawaban yang duplikat");
+    }
+  }
+
+  // Validasi explanation harus menjelaskan jawaban
+  if (question.explanation && question.options && question.correctAnswer !== undefined) {
+    const correctOption = question.options[question.correctAnswer];
+    // Explanation harus menyebut atau menjelaskan jawaban yang benar
+    const explanationMentionsAnswer = 
+      question.explanation.toLowerCase().includes(correctOption.substring(0, 10).toLowerCase());
+    
+    if (!explanationMentionsAnswer && question.explanation.length < 50) {
+      errors.push("Explanation kurang detail atau tidak menjelaskan jawaban");
+    }
+  }
+
+  return {
+    isValid: errors.length === 0,
+    errors,
+  };
+}
+
+// ✅ LOGIKA 3: Fungsi Cek Similarity Soal (Anti-Duplikasi)
+function calculateTextSimilarity(text1: string, text2: string): number {
+  const normalize = (str: string) =>
+    str
+      .toLowerCase()
+      .replace(/[^\w\s]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const t1 = normalize(text1);
+  const t2 = normalize(text2);
+
+  // Exact match
+  if (t1 === t2) return 1.0;
+
+  // Word overlap similarity
+  const words1 = new Set(t1.split(" "));
+  const words2 = new Set(t2.split(" "));
+
+  const intersection = new Set([...words1].filter((w) => words2.has(w)));
+  const union = new Set([...words1, ...words2]);
+
+  return intersection.size / union.size;
+}
+
 export const getTutorResponse = async (
   history: ChatMessage[],
   context?: string,
@@ -218,20 +273,17 @@ export const getTutorResponse = async (
 
     return await retryOnQuotaExceeded(async () => {
       return await rateLimitedRequest(async () => {
-        // Ambil history kecuali pesan terakhir (karena itu akan kita kirim manual dengan context)
         let chatHistory = history.slice(0, -1).map((h) => ({
           role: h.role === "user" ? "user" : "model",
           parts: [{ text: h.text }],
         }));
 
-        // Bersihkan history yang dimulai dengan model (agar chat tidak bingung)
         while (chatHistory.length > 0 && chatHistory[0].role === "model") {
           chatHistory.shift();
         }
 
         const chat = model.startChat({ history: chatHistory });
 
-        // ✅ PERBAIKAN: Suntikkan Context ke dalam pesan user terakhir
         const lastMessage = history[history.length - 1].text;
 
         const finalPrompt = context
@@ -340,7 +392,6 @@ export const getDeepAnalysis = async (
   if (!API_KEY) throw new Error("No API Key");
   if (!genAI) throw new Error("AI Not Init");
 
-  // ✅ VALIDASI KETAT: Pastikan correctAnswer valid
   if (
     typeof question.correctAnswer !== "number" ||
     question.correctAnswer < 0 ||
@@ -362,7 +413,6 @@ export const getDeepAnalysis = async (
   const cacheKey = question.id || question.text;
   if (analysisCache.has(cacheKey)) return analysisCache.get(cacheKey)!;
 
-  // ✅ DEBUG: Log soal yang sedang dianalisis
   console.log("📊 [getDeepAnalysis] Analyzing Question:");
   console.log(`   ID: ${question.id}`);
   console.log(`   Text: ${question.text.substring(0, 80)}...`);
@@ -380,9 +430,9 @@ Analisis soal SNBT berikut:
 Soal: ${question.text}
 
 Opsi:
- ${question.options
-   .map((opt, i) => `${String.fromCharCode(65 + i)}. ${opt}`)
-   .join("\n")}
+${question.options
+  .map((opt, i) => `${String.fromCharCode(65 + i)}. ${opt}`)
+  .join("\n")}
 
 Jawaban Benar: ${String.fromCharCode(65 + question.correctAnswer)}. ${
     question.options[question.correctAnswer]
@@ -420,7 +470,6 @@ RETURN HANYA JSON:
         const cleaned = repairIncompleteJSON(text);
         const parsed = JSON.parse(cleaned);
 
-        // ✅ TRACKING: Tambahkan metadata untuk validasi
         return {
           ...parsed,
           _questionId: question.id,
@@ -453,16 +502,16 @@ RETURN HANYA JSON:
   }
 };
 
-// ✅ PERBAIKAN: Generate soal dengan jumlah lebih kecil dan error handling lebih baik
+// ✅ LOGIKA 2 & 3: Generate Soal dengan Validasi Ketat & Anti-Duplikasi
 export const generateDynamicQuestions = async (
   subtest: SubtestType,
-  count: number = 10, // ✅ Default turun ke 10
+  count: number = 10,
   hotsOnly: boolean = false,
+  existingQuestions: Question[] = [], // ✅ Parameter baru untuk cek duplikasi
 ): Promise<Question[]> => {
   if (!API_KEY) throw new Error("No API Key");
   if (!genAI) throw new Error("AI Not Init");
 
-  // ✅ PENTING: Batasi maksimal 10 soal per request untuk hindari truncation
   const finalCount = Math.min(count, 10);
 
   const hotsInstruction = hotsOnly
@@ -475,39 +524,54 @@ KATEGORI SOAL: HOTS (Higher Order Thinking Skills) ONLY
 `
     : "";
 
+  // ✅ LOGIKA 3: Instruksi Anti-Duplikasi
+  const uniquenessInstruction = `
+CRITICAL: PASTIKAN SOAL BENAR-BENAR BARU DAN UNIK
+- JANGAN gunakan kata-kata atau frasa yang sama persis dengan soal yang pernah dibuat
+- Gunakan variasi angka, nama, konteks yang berbeda
+- Jika membuat soal tentang materi yang sama, gunakan pendekatan dan kasus yang berbeda
+- Setiap soal harus unik minimal 70% dari soal lain yang pernah ada
+`;
+
   const prompt = `
 Generate EXACTLY ${finalCount} soal SNBT berkualitas tinggi untuk subtest: ${subtest}
 
- ${hotsInstruction}
+${hotsInstruction}
+${uniquenessInstruction}
 
 ATURAN VALIDASI KETAT:
 1. Setiap soal HARUS memiliki TEPAT SATU jawaban benar
-2. Verifikasi perhitungan matematis MINIMAL 2 KALI sebelum output
+2. Verifikasi perhitungan matematis MINIMAL 3 KALI sebelum output
 3. Pastikan tidak ada ambiguitas dalam pertanyaan
 4. Opsi pengecoh harus masuk akal tapi jelas salah
 5. Untuk soal kuantitatif/matematika: tunjukkan perhitungan di explanation
+6. VALIDASI ULANG bahwa index correctAnswer (0-4) sesuai dengan opsi yang benar
+7. Explanation harus menjelaskan MENGAPA jawaban benar dan MENGAPA yang lain salah
+
+STANDAR SOAL ${subtest}:
+${getSubtestGuidelines(subtest)}
 
 CRITICAL: Generate EXACTLY ${finalCount} questions, no more, no less.
 
 FORMAT JSON - OUTPUT HARUS ARRAY DENGAN ${finalCount} ELEMEN:
 [
   {
-    "text": "Teks soal lengkap dan jelas (max 300 karakter)",
+    "text": "Teks soal lengkap dan jelas (min 50 karakter)",
     "options": ["Opsi A", "Opsi B", "Opsi C", "Opsi D", "Opsi E"],
     "correctAnswer": 0,
-    "explanation": "Penjelasan singkat (max 200 karakter)",
-    "quickTrick": "Trik cepat (max 100 karakter)"
+    "explanation": "Penjelasan detail dengan langkah perhitungan jika ada (min 100 karakter)",
+    "quickTrick": "Trik cepat jika ada (max 100 karakter)"
   }
 ]
 
 PENTING SEKALI:
 - Index correctAnswer dimulai dari 0 (A=0, B=1, C=2, D=3, E=4)
-- VERIFIKASI ULANG bahwa index correctAnswer sesuai dengan opsi yang benar
+- VERIFIKASI 3X bahwa index correctAnswer sesuai dengan opsi yang benar
 - JANGAN GUNAKAN $ atau \\ di text atau explanation
 - Gunakan simbol unicode: x², √, π, ≠, ≥, ≤
 - Pastikan logika soal 100% benar sebelum output
 - JANGAN TAMBAHKAN TEKS APAPUN DI LUAR JSON ARRAY
-- Buat explanation SINGKAT dan PADAT (max 200 karakter)
+- Explanation harus detail minimal 100 karakter
 - WAJIB generate ${finalCount} soal, tidak kurang tidak lebih
 `;
 
@@ -521,11 +585,11 @@ PENTING SEKALI:
       model: DEFAULT_MODEL,
       systemInstruction:
         MASTER_PERSONA_INSTRUCTION +
-        "\n\nVERIFIKASI JAWABAN: Sebelum output, cek ulang bahwa correctAnswer index sesuai dengan opsi yang benar. " +
+        "\n\nVERIFIKASI JAWABAN: Sebelum output, cek ulang 3X bahwa correctAnswer index sesuai dengan opsi yang benar. " +
         "Output HANYA JSON array yang valid. Pastikan semua string property ditutup dengan benar.",
       generationConfig: {
-        temperature: 0.5,
-        maxOutputTokens: 6000, // ✅ Turunkan untuk 10 soal
+        temperature: 0.8, // ✅ Naikkan untuk variasi lebih tinggi
+        maxOutputTokens: 6000,
         responseMimeType: "application/json",
       },
     });
@@ -538,7 +602,6 @@ PENTING SEKALI:
 
           console.log("📝 Raw response length:", text.length);
 
-          // ✅ Gunakan repair function
           const cleaned = repairIncompleteJSON(text);
 
           console.log("🧹 Cleaned text length:", cleaned.length);
@@ -546,7 +609,6 @@ PENTING SEKALI:
           try {
             const parsed = JSON.parse(cleaned);
 
-            // Validasi struktur
             if (!Array.isArray(parsed)) {
               throw new Error("Response is not an array");
             }
@@ -555,35 +617,53 @@ PENTING SEKALI:
               throw new Error("Response array is empty");
             }
 
-            // Validasi setiap soal
-            const validQuestions = parsed.filter((q: any) => {
-              const isValid =
-                q.text &&
-                typeof q.text === "string" &&
-                Array.isArray(q.options) &&
-                q.options.length === 5 &&
-                typeof q.correctAnswer === "number" &&
-                q.correctAnswer >= 0 &&
-                q.correctAnswer <= 4 &&
-                q.explanation &&
-                typeof q.explanation === "string";
+            // ✅ LOGIKA 2: Validasi setiap soal dengan ketat
+            const validatedQuestions = parsed.filter((q: any) => {
+              const validation = validateQuestionAccuracy(q);
 
-              if (!isValid) {
-                console.warn("⚠️ Invalid question structure:", q);
+              if (!validation.isValid) {
+                console.warn("⚠️ Question validation failed:", validation.errors);
+                console.warn("   Question:", q.text?.substring(0, 50));
+                return false;
               }
 
-              return isValid;
+              return true;
             });
 
-            if (validQuestions.length === 0) {
-              throw new Error("No valid questions in response");
+            // ✅ LOGIKA 3: Filter soal yang terlalu mirip dengan yang sudah ada
+            const uniqueQuestions = validatedQuestions.filter((newQ: any) => {
+              for (const existingQ of existingQuestions) {
+                const similarity = calculateTextSimilarity(
+                  newQ.text,
+                  existingQ.text,
+                );
+
+                if (similarity > 0.7) {
+                  console.warn(
+                    `⚠️ Question too similar (${(similarity * 100).toFixed(0)}%) to existing question, skipping:`,
+                  );
+                  console.warn(`   New: ${newQ.text.substring(0, 50)}...`);
+                  console.warn(
+                    `   Existing: ${existingQ.text.substring(0, 50)}...`,
+                  );
+                  return false;
+                }
+              }
+              return true;
+            });
+
+            if (uniqueQuestions.length === 0) {
+              throw new Error("No unique questions after filtering");
             }
 
             console.log(
-              `✅ Validated ${validQuestions.length}/${parsed.length} questions`,
+              `✅ Validated ${validatedQuestions.length}/${parsed.length} questions`,
+            );
+            console.log(
+              `✅ Unique questions: ${uniqueQuestions.length}/${validatedQuestions.length}`,
             );
 
-            return validQuestions;
+            return uniqueQuestions;
           } catch (parseError: any) {
             console.error("❌ Gagal parse JSON:", parseError.message);
             console.error(
@@ -602,7 +682,6 @@ PENTING SEKALI:
       2000,
     );
 
-    // Format dengan ID unik
     const formattedQuestions = questions.map((q: any, index: number) => ({
       ...q,
       id: `${hotsOnly ? "hots" : "dyn"}-${subtest.substring(0, 3)}-${Date.now()}-${index}`,
@@ -611,7 +690,7 @@ PENTING SEKALI:
     }));
 
     console.log(
-      `✅ Generated ${formattedQuestions.length} ${hotsOnly ? "HOTS " : ""}questions for ${subtest}`,
+      `✅ Generated ${formattedQuestions.length} validated & unique ${hotsOnly ? "HOTS " : ""}questions for ${subtest}`,
     );
     return formattedQuestions;
   } catch (error: any) {
@@ -620,7 +699,56 @@ PENTING SEKALI:
     console.error("❌ Subtest:", subtest);
     console.error("❌ Count requested:", finalCount);
 
-    // Return array kosong instead of throw
     return [];
   }
 };
+
+// ✅ Helper: Guidelines spesifik per subtest
+function getSubtestGuidelines(subtest: SubtestType): string {
+  const guidelines: Record<SubtestType, string> = {
+    [SubtestType.PenalaranUmum]: `
+- Soal logika: silogisme, diagram Venn, inferensi
+- Pola gambar dan angka
+- Analisis argumen dan premis
+- Pernyataan yang ekuivalen
+`,
+    [SubtestType.PengetahuanKuantitatif]: `
+- Aritmatika dasar: perbandingan, rasio, persen
+- Aljabar: persamaan linear dan kuadrat
+- Geometri: luas, volume, sudut
+- Statistika dasar: mean, median, modus
+`,
+    [SubtestType.LiterasiIndo]: `
+- Pemahaman bacaan: ide pokok, detail, inferensi
+- Analisis struktur teks
+- Tata bahasa: EYD, kalimat efektif
+- Jenis-jenis teks (narasi, eksposisi, dll)
+`,
+    [SubtestType.LiterasiInggris]: `
+- Reading comprehension: main idea, detail, inference
+- Grammar: tenses, subject-verb agreement, modals
+- Vocabulary in context
+- Text organization and coherence
+`,
+    [SubtestType.PenalaranMatematika]: `
+- Problem solving dengan konsep matematika
+- Aplikasi matematika dalam kehidupan
+- Soal cerita dengan multi-step solution
+- Interpretasi grafik dan data
+`,
+    [SubtestType.PPU]: `
+- Pengetahuan umum: sejarah, geografi, budaya
+- Sains sosial: ekonomi, sosiologi, politik
+- Current affairs (tapi tidak spesifik tanggal)
+- Tokoh dan peristiwa penting
+`,
+    [SubtestType.PBM]: `
+- Analisis wacana dan argumentasi
+- Struktur teks dan koherensi
+- Ide pokok dan ide pendukung
+- Kalimat efektif dan pengembangan paragraf
+`,
+  };
+
+  return guidelines[subtest] || "";
+}

@@ -145,18 +145,53 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
     }
 
     const solvedIds = progress.solvedQuestionIds || [];
-    let newPool = filtered.filter((q) => !solvedIds.includes(q.id));
 
-    if (newPool.length < 20) {
-      console.warn(
-        `⚠️ Soal baru hanya ${newPool.length}. Mengambil ulang soal lama.`,
-      );
-      const oldPool = filtered.filter((q) => solvedIds.includes(q.id));
-      const shuffledOld = oldPool.sort(() => 0.5 - Math.random());
-      newPool = [...newPool, ...shuffledOld];
+    // ✅ PERBAIKAN UTAMA: Filter soal yang belum pernah dikerjakan
+    let unsolvedQuestions = filtered.filter((q) => !solvedIds.includes(q.id));
+
+    console.log("📊 Question Pool Statistics:");
+    console.log(`   Total questions for ${pendingSubtest}:`, filtered.length);
+    console.log(`   Solved questions:`, solvedIds.length);
+    console.log(`   Unsolved questions:`, unsolvedQuestions.length);
+
+    // ✅ LOGIKA 1: Jika bank soal >= 20 dan masih ada soal baru, JANGAN ambil soal lama
+    if (filtered.length >= 20 && unsolvedQuestions.length >= 20) {
+      console.log("✅ Using only new unsolved questions (pool >= 20)");
+      // Cukup gunakan soal baru saja
+    }
+    // Jika soal baru < 20 tapi total >= 20, ambil soal lama juga
+    else if (filtered.length >= 20 && unsolvedQuestions.length < 20) {
+      console.log("⚠️ Not enough new questions, mixing with solved questions");
+      const neededFromSolved = 20 - unsolvedQuestions.length;
+      const solvedQuestions = filtered.filter((q) => solvedIds.includes(q.id));
+      const shuffledSolved = solvedQuestions.sort(() => 0.5 - Math.random());
+
+      unsolvedQuestions = [
+        ...unsolvedQuestions,
+        ...shuffledSolved.slice(0, neededFromSolved),
+      ];
+    }
+    // Jika total soal < 20, gunakan semua yang ada
+    else {
+      console.log("⚠️ Question pool < 20, using all available questions");
+      unsolvedQuestions = filtered;
     }
 
-    const finalPool = newPool.sort(() => 0.5 - Math.random()).slice(0, 20);
+    // Shuffle dan ambil 20 soal
+    const finalPool = unsolvedQuestions
+      .sort(() => 0.5 - Math.random())
+      .slice(0, Math.min(20, unsolvedQuestions.length));
+
+    if (finalPool.length < 10) {
+      alert(
+        `⚠️ Hanya ada ${finalPool.length} soal tersedia untuk ${pendingSubtest}.\n\n` +
+          `Silakan download lebih banyak soal dari sidebar.`,
+      );
+      setShowConfirmModal(false);
+      return;
+    }
+
+    console.log(`✅ Final question pool: ${finalPool.length} questions`);
 
     setQuestions(finalPool);
     setSelectedSubtest(pendingSubtest);
@@ -339,7 +374,7 @@ const Practice: React.FC<PracticeProps> = ({ progress, setProgress }) => {
       setExplanationMode("quick");
       setChatMessages([]);
       setInteractiveMessages([]);
-      setHasAutoTriggered(false); // Reset trigger untuk soal baru
+      setHasAutoTriggered(false);
     } else {
       finishPractice();
     }

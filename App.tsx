@@ -38,7 +38,7 @@ const App: React.FC = () => {
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncProgress, setSyncProgress] = useState(0);
-  
+
   const [showRegularMenu, setShowRegularMenu] = useState(false);
   const [showHOTSMenu, setShowHOTSMenu] = useState(false);
 
@@ -53,8 +53,11 @@ const App: React.FC = () => {
     });
   }, []);
 
-  // ✅ PERBAIKAN: Download dengan jumlah soal yang lebih kecil (10 soal per batch)
-  const handleDownloadSubtest = async (subtest: SubtestType, isHOTS: boolean = false) => {
+  // ✅ LOGIKA 2 & 3: Download dengan validasi ketat dan anti-duplikasi
+  const handleDownloadSubtest = async (
+    subtest: SubtestType,
+    isHOTS: boolean = false,
+  ) => {
     if (isSyncing) return;
 
     const apiKey = localStorage.getItem("user_gemini_api_key");
@@ -71,47 +74,71 @@ const App: React.FC = () => {
     setShowHOTSMenu(false);
 
     try {
-      // ✅ PERBAIKAN: Turunkan jumlah soal per batch untuk hindari truncation
-      // Buat 2 batch @ 10 soal untuk total 20 soal
       const BATCH_SIZE = 10;
       const TOTAL_BATCHES = 2;
       let totalAdded = 0;
+      let totalSkipped = 0;
+
+      // ✅ LOGIKA 3: Dapatkan soal yang sudah ada untuk cek duplikasi
+      let existingQuestions = dbService.loadQuestions();
 
       console.log(
-        `🎯 Downloading ${isHOTS ? 'HOTS ' : ''}questions for ${subtest} in ${TOTAL_BATCHES} batches...`,
+        `🎯 Downloading ${isHOTS ? "HOTS " : ""}questions for ${subtest} in ${TOTAL_BATCHES} batches...`,
       );
+      console.log(`📊 Current database: ${existingQuestions.length} questions`);
 
       for (let batch = 1; batch <= TOTAL_BATCHES; batch++) {
         console.log(`📦 Batch ${batch}/${TOTAL_BATCHES}...`);
-        
+
+        // ✅ Pass existingQuestions untuk anti-duplikasi
         const newQuestions = await generateDynamicQuestions(
           subtest,
           BATCH_SIZE,
           isHOTS,
+          existingQuestions, // ⭐ Parameter baru untuk validasi
         );
 
         if (newQuestions && newQuestions.length > 0) {
+          const beforeCount = dbService.loadQuestions().length;
           const added = dbService.addQuestions(newQuestions);
+          const afterCount = dbService.loadQuestions().length;
+
           totalAdded += added;
-          console.log(`✅ Batch ${batch}: Added ${added} questions`);
+          totalSkipped += newQuestions.length - added;
+
+          console.log(
+            `✅ Batch ${batch}: Generated ${newQuestions.length}, Added ${added}, Skipped ${newQuestions.length - added} duplicates`,
+          );
+
+          // ✅ Update existing questions untuk batch berikutnya
+          existingQuestions = dbService.loadQuestions();
         } else {
-          console.warn(`⚠️ Batch ${batch} failed`);
+          console.warn(`⚠️ Batch ${batch} produced no valid questions`);
         }
 
         setSyncProgress(Math.round((batch / TOTAL_BATCHES) * 100));
-        
+
         // Delay antar batch untuk hindari rate limit
         if (batch < TOTAL_BATCHES) {
-          await new Promise(resolve => setTimeout(resolve, 1500));
+          await new Promise((resolve) => setTimeout(resolve, 1500));
         }
       }
 
       if (totalAdded > 0) {
         alert(
-          `✅ Berhasil!\n\nMenambahkan ${totalAdded} soal ${isHOTS ? 'HOTS ' : ''}baru untuk:\n${subtest}`,
+          `✅ Berhasil!\n\n` +
+            `Menambahkan ${totalAdded} soal ${isHOTS ? "HOTS " : ""}UNIK baru untuk:\n${subtest}\n\n` +
+            `${totalSkipped > 0 ? `Melewati ${totalSkipped} soal duplikat/tidak valid.\n` : ""}` +
+            `Semua soal telah divalidasi dan dipastikan berbeda dari yang sudah ada.`,
         );
       } else {
-        alert(`⚠️ Gagal generate soal untuk: ${subtest}\n\nCoba lagi.`);
+        alert(
+          `⚠️ Tidak ada soal baru yang ditambahkan.\n\n` +
+            `Kemungkinan:\n` +
+            `- Soal yang dihasilkan terlalu mirip dengan yang sudah ada\n` +
+            `- Validasi AI gagal memenuhi standar ketat\n\n` +
+            `Coba lagi untuk mendapat variasi berbeda.`,
+        );
       }
     } catch (err: any) {
       const errorMessage = err.message || String(err);
@@ -128,7 +155,11 @@ const App: React.FC = () => {
         );
       } else {
         alert(
-          "Terjadi kendala saat menghubungi AI. Periksa koneksi internet Anda.",
+          "❌ Terjadi kendala saat menghubungi AI.\n\n" +
+            "Detail: " +
+            errorMessage +
+            "\n\n" +
+            "Periksa koneksi internet Anda atau coba lagi.",
         );
       }
     } finally {
@@ -137,7 +168,7 @@ const App: React.FC = () => {
     }
   };
 
-  // ✅ Download Semua Soal Sekaligus (bulk) dengan batching
+  // ✅ LOGIKA 2 & 3: Bulk sync dengan validasi dan anti-duplikasi
   const handleBulkSync = async (isHOTS: boolean = false) => {
     if (isSyncing) return;
 
@@ -150,12 +181,13 @@ const App: React.FC = () => {
     }
 
     const confirmed = confirm(
-      `⚠️ DOWNLOAD SEMUA SOAL ${isHOTS ? 'HOTS' : 'REGULER'}\n\n` +
-      "Ini akan mengunduh ~140 soal untuk semua subtest.\n" +
-      "Proses ini bisa memakan waktu 5-10 menit.\n\n" +
-      "Lanjutkan?"
+      `⚠️ DOWNLOAD SEMUA SOAL ${isHOTS ? "HOTS" : "REGULER"}\n\n` +
+        "Ini akan mengunduh ~140 soal UNIK untuk semua subtest.\n" +
+        "Proses ini bisa memakan waktu 5-10 menit.\n" +
+        "Semua soal akan divalidasi dan dicek duplikasi.\n\n" +
+        "Lanjutkan?",
     );
-    
+
     if (!confirmed) return;
 
     setIsSyncing(true);
@@ -167,12 +199,19 @@ const App: React.FC = () => {
     const BATCH_SIZE = 10;
     const BATCHES_PER_SUBTEST = 2;
     let totalAdded = 0;
+    let totalSkipped = 0;
     let completed = 0;
     const totalTasks = subtests.length * BATCHES_PER_SUBTEST;
 
     try {
+      // ✅ LOGIKA 3: Load existing questions once
+      let existingQuestions = dbService.loadQuestions();
+
+      console.log(`🎯 Starting bulk sync for all subtests...`);
+      console.log(`📊 Current database: ${existingQuestions.length} questions`);
+
       for (const subtest of subtests) {
-        console.log(`🎯 Processing ${subtest}...`);
+        console.log(`\n🎯 Processing ${subtest}...`);
 
         for (let batch = 1; batch <= BATCHES_PER_SUBTEST; batch++) {
           try {
@@ -180,26 +219,41 @@ const App: React.FC = () => {
               subtest,
               BATCH_SIZE,
               isHOTS,
+              existingQuestions, // ✅ Pass untuk anti-duplikasi
             );
 
             if (newQuestions && newQuestions.length > 0) {
-              totalAdded += dbService.addQuestions(newQuestions);
+              const addedCount = dbService.addQuestions(newQuestions);
+              totalAdded += addedCount;
+              totalSkipped += newQuestions.length - addedCount;
+
+              // Update existing untuk batch berikutnya
+              existingQuestions = dbService.loadQuestions();
+
+              console.log(
+                `✅ ${subtest} batch ${batch}: Generated ${newQuestions.length}, Added ${addedCount}, Skipped ${newQuestions.length - addedCount}`,
+              );
             }
 
             completed++;
             setSyncProgress(Math.round((completed / totalTasks) * 100));
 
-            // Delay antar batch
-            await new Promise(resolve => setTimeout(resolve, 1500));
-          } catch (batchError) {
-            console.error(`Failed batch ${batch} for ${subtest}:`, batchError);
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+          } catch (batchError: any) {
+            console.error(
+              `❌ Failed batch ${batch} for ${subtest}:`,
+              batchError.message,
+            );
             // Continue dengan batch berikutnya
           }
         }
       }
 
       alert(
-        `✅ Sinkronisasi ${isHOTS ? 'HOTS ' : ''}Selesai!\n\nBerhasil menambahkan ${totalAdded} soal baru.`,
+        `✅ Sinkronisasi ${isHOTS ? "HOTS " : ""}Selesai!\n\n` +
+          `Berhasil menambahkan ${totalAdded} soal UNIK baru.\n` +
+          `${totalSkipped > 0 ? `Melewati ${totalSkipped} soal duplikat/tidak valid.\n` : ""}` +
+          `\nSemua soal telah divalidasi dan dipastikan berbeda.`,
       );
     } catch (err: any) {
       const errorMessage = err.message || String(err);
@@ -212,11 +266,15 @@ const App: React.FC = () => {
         alert(
           "⚠️ KUOTA HABIS!\n\n" +
             "API Key Anda telah mencapai batas permintaan hari ini.\n" +
+            `Berhasil menambahkan ${totalAdded} soal sebelum limit tercapai.\n\n` +
             "💡 Solusi: Coba lagi besok atau gunakan API Key lain.",
         );
       } else {
         alert(
-          "Terjadi kendala saat menghubungi AI. Periksa koneksi internet Anda.",
+          `❌ Terjadi kendala saat menghubungi AI.\n\n` +
+            `Berhasil menambahkan ${totalAdded} soal sebelum error.\n` +
+            `Detail: ${errorMessage}\n\n` +
+            `Periksa koneksi internet Anda.`,
         );
       }
     } finally {
@@ -262,7 +320,7 @@ const App: React.FC = () => {
   // Komponen Dropdown Menu untuk Pilih Subtest
   const SubtestMenu = ({ isHOTS }: { isHOTS: boolean }) => {
     const subtests = Object.values(SubtestType);
-    
+
     return (
       <div className="absolute bottom-full left-0 right-0 mb-1 bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden z-50 max-h-80 overflow-y-auto">
         {/* Header dengan tombol Ambil Semua */}
@@ -276,14 +334,14 @@ const App: React.FC = () => {
             Ambil Semua (~140 Soal)
           </button>
           <p className="text-[9px] text-slate-500 text-center mt-1">
-            Proses 5-10 menit • 2 batch per subtest
+            Proses 5-10 menit • 2 batch per subtest • Validasi ketat
           </p>
         </div>
 
         {/* List Subtest */}
         <div className="p-2">
           <p className="text-[10px] font-bold text-slate-400 uppercase px-3 py-2">
-            Pilih Subtest (20 soal = 2 batch)
+            Pilih Subtest (20 soal unik = 2 batch)
           </p>
           {subtests.map((subtest) => {
             return (
@@ -298,10 +356,13 @@ const App: React.FC = () => {
                     {subtest}
                   </p>
                   <p className="text-[10px] text-slate-400">
-                    20 soal {isHOTS ? 'HOTS' : 'reguler'} (2 batch × 10)
+                    20 soal {isHOTS ? "HOTS" : "reguler"} unik (2 batch × 10)
                   </p>
                 </div>
-                <Download size={16} className="text-slate-300 group-hover:text-indigo-600" />
+                <Download
+                  size={16}
+                  className="text-slate-300 group-hover:text-indigo-600"
+                />
               </button>
             );
           })}
@@ -384,7 +445,6 @@ const App: React.FC = () => {
           </div>
 
           <div className="shrink-0 bg-slate-50/50 border-t border-slate-200 p-6 flex flex-col gap-4">
-            
             <div className="space-y-3">
               <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
                 Update Bank Soal
@@ -395,18 +455,21 @@ const App: React.FC = () => {
                 <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3 mb-2">
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-xs font-semibold text-indigo-700">
-                      Downloading...
+                      Downloading & Validating...
                     </span>
                     <span className="text-xs font-bold text-indigo-600">
                       {syncProgress}%
                     </span>
                   </div>
                   <div className="w-full bg-indigo-100 rounded-full h-2 overflow-hidden">
-                    <div 
+                    <div
                       className="bg-indigo-600 h-full transition-all duration-300 rounded-full"
                       style={{ width: `${syncProgress}%` }}
                     />
                   </div>
+                  <p className="text-[9px] text-indigo-600 mt-2 text-center font-bold">
+                    Memvalidasi keakuratan & keunikan soal...
+                  </p>
                 </div>
               )}
 
@@ -421,13 +484,22 @@ const App: React.FC = () => {
                   className="w-full flex items-center justify-between bg-indigo-600 text-white p-3 rounded-xl text-xs font-bold border border-indigo-700 hover:bg-indigo-700 transition-all shadow-md shadow-indigo-100 disabled:bg-slate-300 disabled:cursor-not-allowed"
                 >
                   <div className="flex items-center gap-2">
-                    <Sparkles size={16} className={isSyncing ? "animate-spin" : ""} />
+                    <Sparkles
+                      size={16}
+                      className={isSyncing ? "animate-spin" : ""}
+                    />
                     Tambah Soal Reguler
                   </div>
-                  {showRegularMenu ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                  {showRegularMenu ? (
+                    <ChevronUp size={16} />
+                  ) : (
+                    <ChevronDown size={16} />
+                  )}
                 </button>
-                
-                {showRegularMenu && !isSyncing && <SubtestMenu isHOTS={false} />}
+
+                {showRegularMenu && !isSyncing && (
+                  <SubtestMenu isHOTS={false} />
+                )}
               </div>
 
               {/* Tombol Download Soal HOTS dengan Dropdown */}
@@ -441,12 +513,19 @@ const App: React.FC = () => {
                   className="w-full flex items-center justify-between bg-purple-600 text-white p-3 rounded-xl text-xs font-bold border border-purple-700 hover:bg-purple-700 transition-all shadow-md shadow-purple-100 disabled:bg-slate-300 disabled:cursor-not-allowed"
                 >
                   <div className="flex items-center gap-2">
-                    <Brain size={16} className={isSyncing ? "animate-spin" : ""} />
+                    <Brain
+                      size={16}
+                      className={isSyncing ? "animate-spin" : ""}
+                    />
                     Tambah Soal HOTS
                   </div>
-                  {showHOTSMenu ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                  {showHOTSMenu ? (
+                    <ChevronUp size={16} />
+                  ) : (
+                    <ChevronDown size={16} />
+                  )}
                 </button>
-                
+
                 {showHOTSMenu && !isSyncing && <SubtestMenu isHOTS={true} />}
               </div>
 
