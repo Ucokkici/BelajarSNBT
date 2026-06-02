@@ -609,12 +609,7 @@ const App: React.FC = () => {
 
           <div className="flex-1 overflow-y-auto p-4 md:p-8 no-scrollbar bg-slate-50/50">
             <Routes>
-              <Route
-                path="/"
-                element={
-                  <Home progress={progress} setProgress={updateProgress} />
-                }
-              />
+              <Route path="/" element={<Home progress={progress} />} />
               <Route
                 path="/learn"
                 element={
